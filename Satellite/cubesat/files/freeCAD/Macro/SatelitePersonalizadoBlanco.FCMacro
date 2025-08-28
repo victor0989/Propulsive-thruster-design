@@ -1,0 +1,216 @@
+# -*- coding: utf-8 -*-
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+from math import sqrt, pi
+
+# =========================
+# Parámetros (en metros)
+# =========================
+D_ant = 2.0            # Diámetro de la antena principal (m) -> edita aquí
+cyl_diam_factor = 0.9
+cyl_height_factor = 2.5
+dish_depth_factor = 0.25
+panel_len_factor = 3.0
+panel_wid_factor = 0.5
+cone_h_factor = 0.4
+cone_top_diam_factor = 0.6
+mast_h_factor = 0.6
+mast_diam_factor = 0.06
+
+# Espesores (m)
+wall_thk = 0.005
+dish_thk = 0.006
+panel_thk = 0.005
+flange_thk = 0.012
+flange_rad_add = 0.05
+flange_rad_sub = 0.02
+hinge_radius = 0.03
+hinge_len = 0.15
+bracket_t = 0.01
+bracket_h = 0.10
+bracket_w = 0.08
+
+# Densidades (kg/m^3)
+rho_alu = 2810.0
+rho_cfrp = 1600.0
+
+# =========================
+# Utilidades
+# =========================
+def mm(v_m):  # convierte metros a milímetros (FreeCAD usa mm)
+    return v_m * 1000.0
+
+def add_part(doc, shape, name, color=(0.8,0.8,0.8)):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    try:
+        obj.ViewObject.ShapeColor = color
+    except Exception:
+        pass
+    return obj
+
+def set_props(obj, material, rho, vol_m3):
+    obj.addProperty("App::PropertyString","Material","Physics","Material").Material = material
+    obj.addProperty("App::PropertyFloat","Density_kg_m3","Physics","Density").Density_kg_m3 = rho
+    obj.addProperty("App::PropertyFloat","Volume_m3","Physics","Volume m3").Volume_m3 = vol_m3
+    obj.addProperty("App::PropertyFloat","Mass_kg","Physics","Mass kg").Mass_kg = vol_m3 * rho
+
+# =========================
+# Geometría paramétrica
+# =========================
+R_ant = D_ant / 2.0
+
+# Cuerpo cilíndrico
+R_cyl = cyl_diam_factor * R_ant
+H_cyl = cyl_height_factor * D_ant
+
+# Plato (cap esférico aproximando curvatura deseada)
+H_dish = dish_depth_factor * D_ant
+# Esfera que genera un casquete con profundidad H_dish en radio R_ant
+R_sphere = (R_ant**2 + H_dish**2) / (2.0 * H_dish)
+z_center_sphere = -(R_sphere - H_dish)  # rim en z=0, vértice en z=-H_dish
+
+# Cono superior
+H_cone = cone_h_factor * D_ant
+R_cone_base = R_cyl
+R_cone_top = (cone_top_diam_factor * D_ant) / 2.0
+
+# Mástil
+H_mast = mast_h_factor * D_ant
+R_mast = (mast_diam_factor * D_ant) / 2.0
+
+# Paneles
+L_panel = panel_len_factor * D_ant
+W_panel = panel_wid_factor * D_ant
+
+# =========================
+# Documento
+# =========================
+doc = App.newDocument("SatParam")
+# Base colors
+COL_AL = (0.75, 0.75, 0.78)
+COL_DISH = (0.9, 0.9, 0.95)
+COL_PANEL = (0.1, 0.15, 0.4)
+COL_HINGE = (0.4, 0.4, 0.45)
+COL_MAST = (0.2, 0.2, 0.2)
+
+# =========================
+# 1) Cuerpo cilíndrico hueco
+# =========================
+outer_cyl = Part.makeCylinder(mm(R_cyl), mm(H_cyl), App.Vector(0,0,0), App.Vector(0,0,1))
+inner_cyl = Part.makeCylinder(mm(max(R_cyl - wall_thk, 0.001)), mm(H_cyl), App.Vector(0,0,0), App.Vector(0,0,1))
+bus_shell = outer_cyl.cut(inner_cyl)
+bus_obj = add_part(doc, bus_shell, "BusCilindrico", COL_AL)
+vol_bus_m3 = bus_obj.Shape.Volume / 1e9
+set_props(bus_obj, "Al 7075-T6", rho_alu, vol_bus_m3)
+
+# Brida inferior (anillo)
+R_flange_outer = R_cyl + flange_rad_add
+R_flange_inner = max(R_cyl - flange_rad_sub, 0.001)
+flange_out = Part.makeCylinder(mm(R_flange_outer), mm(flange_thk), App.Vector(0,0,0))
+flange_in = Part.makeCylinder(mm(R_flange_inner), mm(flange_thk), App.Vector(0,0,0))
+flange_ring = flange_out.cut(flange_in)
+flange_obj = add_part(doc, flange_ring, "BridaInferior", COL_AL)
+vol_flange_m3 = flange_obj.Shape.Volume / 1e9
+set_props(flange_obj, "Al 7075-T6", rho_alu, vol_flange_m3)
+
+# =========================
+# 2) Plato (casquete esférico hueco) bajo z=0
+# =========================
+Lbox = 4.0 * R_sphere
+outer_sph = Part.makeSphere(mm(R_sphere), App.Vector(0,0,mm(z_center_sphere)))
+lower_box = Part.makeBox(mm(Lbox), mm(Lbox), mm(Lbox), App.Vector(mm(-Lbox/2), mm(-Lbox/2), mm(-Lbox)))
+cap_outer = outer_sph.common(lower_box)
+
+inner_sph = Part.makeSphere(mm(max(R_sphere - dish_thk, 0.001)), App.Vector(0,0,mm(z_center_sphere)))
+cap_inner = inner_sph.common(lower_box)
+dish_shell = cap_outer.cut(cap_inner)
+dish_obj = add_part(doc, dish_shell, "PlatoAntena", COL_DISH)
+vol_dish_m3 = dish_obj.Shape.Volume / 1e9
+set_props(dish_obj, "Al 7075-T6", rho_alu, vol_dish_m3)
+
+# =========================
+# 3) Cono superior (troncocónico)
+# =========================
+cone = Part.makeCone(mm(R_cone_base), mm(R_cone_top), mm(H_cone), App.Vector(0,0,mm(H_cyl)), App.Vector(0,0,1))
+# Hacerlo hueco con mismo espesor de pared
+cone_inner = Part.makeCone(mm(max(R_cone_base - wall_thk, 0.001)),
+                           mm(max(R_cone_top - wall_thk, 0.0005)),
+                           mm(H_cone), App.Vector(0,0,mm(H_cyl)), App.Vector(0,0,1))
+cone_shell = cone.cut(cone_inner)
+cone_obj = add_part(doc, cone_shell, "ConoSuperior", COL_AL)
+vol_cone_m3 = cone_obj.Shape.Volume / 1e9
+set_props(cone_obj, "Al 7075-T6", rho_alu, vol_cone_m3)
+
+# =========================
+# 4) Mástil
+# =========================
+mast = Part.makeCylinder(mm(R_mast), mm(H_mast), App.Vector(0,0,mm(H_cyl + H_cone)), App.Vector(0,0,1))
+mast_obj = add_part(doc, mast, "Mastil", COL_MAST)
+vol_mast_m3 = mast_obj.Shape.Volume / 1e9
+set_props(mast_obj, "CFRP", rho_cfrp, vol_mast_m3)
+
+# =========================
+# 5) Paneles solares y bisagras (x2)
+# =========================
+# Panel +X (sale hacia +X), bisagra con eje paralelo a Y
+panel_box_pos = Part.makeBox(mm(L_panel), mm(W_panel), mm(panel_thk),
+                             App.Vector(mm(R_cyl), mm(-W_panel/2.0), mm(H_cyl*0.5 - panel_thk/2.0)))
+panel_pos_obj = add_part(doc, panel_box_pos, "PanelPosX", COL_PANEL)
+vol_p_pos_m3 = panel_pos_obj.Shape.Volume / 1e9
+set_props(panel_pos_obj, "CFRP", rho_cfrp, vol_p_pos_m3)
+
+hinge_pos = Part.makeCylinder(mm(hinge_radius), mm(hinge_len),
+                              App.Vector(mm(R_cyl - hinge_len/2.0), 0, mm(H_cyl*0.5)), App.Vector(0,1,0))
+hinge_pos_obj = add_part(doc, hinge_pos, "BisagraPosX", COL_HINGE)
+set_props(hinge_pos_obj, "Al 7075-T6", rho_alu, hinge_pos_obj.Shape.Volume/1e9)
+
+bracket_pos = Part.makeBox(mm(bracket_t), mm(bracket_w), mm(bracket_h),
+                           App.Vector(mm(R_cyl - bracket_t), mm(-bracket_w/2.0), mm(H_cyl*0.5 - bracket_h/2.0)))
+bracket_pos_obj = add_part(doc, bracket_pos, "SoportePosX", COL_AL)
+set_props(bracket_pos_obj, "Al 7075-T6", rho_alu, bracket_pos_obj.Shape.Volume/1e9)
+
+# Panel -X (sale hacia -X)
+panel_box_neg = Part.makeBox(mm(L_panel), mm(W_panel), mm(panel_thk),
+                             App.Vector(mm(-R_cyl - L_panel), mm(-W_panel/2.0), mm(H_cyl*0.5 - panel_thk/2.0)))
+panel_neg_obj = add_part(doc, panel_box_neg, "PanelNegX", COL_PANEL)
+vol_p_neg_m3 = panel_neg_obj.Shape.Volume / 1e9
+set_props(panel_neg_obj, "CFRP", rho_cfrp, vol_p_neg_m3)
+
+hinge_neg = Part.makeCylinder(mm(hinge_radius), mm(hinge_len),
+                              App.Vector(mm(-R_cyl - hinge_len/2.0), 0, mm(H_cyl*0.5)), App.Vector(0,1,0))
+hinge_neg_obj = add_part(doc, hinge_neg, "BisagraNegX", COL_HINGE)
+set_props(hinge_neg_obj, "Al 7075-T6", rho_alu, hinge_neg_obj.Shape.Volume/1e9)
+
+bracket_neg = Part.makeBox(mm(bracket_t), mm(bracket_w), mm(bracket_h),
+                           App.Vector(mm(-R_cyl), mm(-bracket_w/2.0), mm(H_cyl*0.5 - bracket_h/2.0)))
+bracket_neg_obj = add_part(doc, bracket_neg, "SoporteNegX", COL_AL)
+set_props(bracket_neg_obj, "Al 7075-T6", rho_alu, bracket_neg_obj.Shape.Volume/1e9)
+
+# =========================
+# 6) Resumen de masa
+# =========================
+total_mass = 0.0
+parts = [bus_obj, flange_obj, dish_obj, cone_obj, mast_obj, panel_pos_obj, panel_neg_obj,
+         hinge_pos_obj, hinge_neg_obj, bracket_pos_obj, bracket_neg_obj]
+for p in parts:
+    total_mass += p.Mass_kg
+
+# Propiedad en documento
+doc.addObject("App::FeaturePython","Resumen")
+doc.Resumen.addProperty("App::PropertyFloat","MasaTotal_kg","Summary","Masa total kg").MasaTotal_kg = total_mass
+
+# =========================
+# Final
+# =========================
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print("Modelo generado.")
+print("Diámetro antena (m):", D_ant)
+print("Masa total estimada (kg):", round(total_mass, 2))

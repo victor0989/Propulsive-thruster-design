@@ -1,0 +1,467 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: SAT_ASM VASIMR Mars/Titan/Europa concept
+# Autor: Víctor + Copilot
+# Unidades: mm (parámetros en m convertidos a mm)
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+DOC_NAME = "SAT_ASM"
+
+def ensure_doc(name):
+    doc = App.ActiveDocument
+    if doc is None or doc.Label != name:
+        try:
+            doc = App.getDocument(name)
+        except Exception:
+            doc = App.newDocument(name)
+    return doc
+
+doc = ensure_doc(DOC_NAME)
+
+# -----------------------------
+# Parámetros (m → mm)
+# -----------------------------
+mm = 1000.0
+
+P = {
+    # Bus
+    "bus_len_x": 1.60*mm,  # X
+    "bus_wid_y": 1.30*mm,  # Y
+    "bus_hei_z": 1.20*mm,  # Z
+    "sand_core": 0.020*mm, # 20 mm → en mm
+    "facesheet": 0.0005*mm, # 0.5 mm → en mm
+    # Cuadernas
+    "rib_pitch": 0.300*mm,
+    "L_leg": 0.040*mm,
+    "L_thk": 0.004*mm,
+    # Launcher ring
+    "launch_ring_OD": 1.575*mm,
+    "launch_ring_BCD": 1.450*mm,
+    "launch_ring_thk": 0.020*mm,
+    "bolt_diameter": 0.012*mm,  # M12 default (ajustable a M10)
+    "bolt_count": 8,            # o 12 pétalos
+    # Ala solar
+    "wing_len_y": 6.0*mm,
+    "wing_wid_x": 2.2*mm,
+    "wing_thk": 0.025*mm,
+    "subpanel_len_y": 2.0*mm,
+    "root_shaft_OD": 0.120*mm,
+    "bearing_OD": 0.220*mm,
+    "bearing_ID": 0.160*mm,
+    # Antenas
+    "hga_dish_D": 1.20*mm,
+    "hga_focus": 0.42*mm,
+    "hga_offset": 0.10*mm,
+    "hga_arm_len": 0.60*mm,
+    "lga_size": (0.200*mm, 0.200*mm, 0.010*mm),
+    # VASIMR
+    "vasimr_len": 2.50*mm,
+    "vasimr_D": 0.45*mm,
+    "nozzle_D": 0.52*mm,
+    # Bastidor motor
+    "frame_box": (0.060*mm, 0.060*mm, 0.004*mm),  # 60x60x4
+    "frame_cantilever": 0.80*mm,  # desde cara -X del bus
+    # Tanques
+    "num_tanks": 2,
+    "tank_OD": 0.60*mm,
+    "tank_len_cyl": 1.00*mm,
+    # Líneas propelente
+    "line_OD": 0.012*mm,
+    "line_t": 0.001*mm,
+    "line_min_R": 0.075*mm,
+    # Radiadores
+    "rad_wid_x": 1.20*mm,
+    "rad_len_y": 2.00*mm,
+    "rad_thk": 0.015*mm,
+    "rad_offset_x": 0.300*mm,
+    # Payload
+    "payload_ring_OD": 0.80*mm,
+    "payload_ring_W": 0.20*mm,
+    "payload_ring_depth": 0.25*mm,
+    "sensor_disc_D": 1.00*mm,  # dentro del rango 0.90–1.20 m
+    "sensor_disc_thk": 0.060*mm,
+}
+
+# Derivados
+P["panel_thk"] = 2*P["facesheet"] + P["sand_core"]  # 21 mm
+bus = {
+    "hx": P["bus_len_x"]/2.0,
+    "hy": P["bus_wid_y"]/2.0,
+    "hz": P["bus_hei_z"]/2.0
+}
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def add(obj, name, color=None, group=None):
+    obj.Label = name
+    if color:
+        try:
+            Gui.ActiveDocument.getObject(obj.Name).ShapeColor = color
+        except Exception:
+            pass
+    if group:
+        group.addObject(obj)
+    return obj
+
+def make_plate(size_x, size_y, thk, center=(0,0,0), normal="Z"):
+    # Crea una placa rectangular con espesor thk, normal a eje indicado
+    if normal == "Z":
+        box = Part.makeBox(size_x, size_y, thk)
+        box.translate(App.Vector(-size_x/2.0, -size_y/2.0, -thk/2.0))
+        box.translate(App.Vector(*center))
+    elif normal == "X":
+        box = Part.makeBox(thk, size_x, size_y)
+        box.translate(App.Vector(-thk/2.0, -size_x/2.0, -size_y/2.0))
+        box.translate(App.Vector(*center))
+    elif normal == "Y":
+        box = Part.makeBox(size_x, thk, size_y)
+        box.translate(App.Vector(-size_x/2.0, -thk/2.0, -size_y/2.0))
+        box.translate(App.Vector(*center))
+    return box
+
+def make_cyl(D, H, center=(0,0,0), axis="X"):
+    r = D/2.0
+    if axis == "X":
+        c = Part.makeCylinder(r, H, App.Vector(*center), App.Vector(1,0,0))
+    elif axis == "Y":
+        c = Part.makeCylinder(r, H, App.Vector(*center), App.Vector(0,1,0))
+    else:
+        c = Part.makeCylinder(r, H, App.Vector(*center), App.Vector(0,0,1))
+    return c
+
+def make_tube(OD, t, L, center=(0,0,0), axis="X"):
+    solid = make_cyl(OD, L, center, axis)
+    inner = make_cyl(OD-2*t, L+0.001*mm, center, axis)  # inner a hair longer
+    return solid.cut(inner)
+
+def make_sphere(D, center=(0,0,0)):
+    return Part.makeSphere(D/2.0, App.Vector(*center))
+
+def vector(x,y,z): return App.Vector(x,y,z)
+
+# -----------------------------
+# Estructura de grupos (árbol)
+# -----------------------------
+root = doc.addObject("App::DocumentObjectGroup", "SAT_ASM")
+grp_bus = doc.addObject("App::DocumentObjectGroup", "BUS_PRISM")
+grp_pan = doc.addObject("App::DocumentObjectGroup", "PANELS")
+grp_ribs = doc.addObject("App::DocumentObjectGroup", "RIBS_SET")
+grp_launch = doc.addObject("App::DocumentObjectGroup", "LAUNCH_RING")
+grp_solar = doc.addObject("App::DocumentObjectGroup", "SOLAR_WING_ASM")
+grp_prop = doc.addObject("App::DocumentObjectGroup", "PROP_ASM")
+grp_ant = doc.addObject("App::DocumentObjectGroup", "ANTENNAS")
+grp_payload = doc.addObject("App::DocumentObjectGroup", "PAYLOAD_RING")
+
+root.addObject(grp_bus)
+grp_bus.addObject(grp_pan)
+grp_bus.addObject(grp_ribs)
+root.addObject(grp_launch)
+root.addObject(grp_solar)
+root.addObject(grp_prop)
+root.addObject(grp_ant)
+root.addObject(grp_payload)
+
+# -----------------------------
+# 1) Paneles del bus (sándwich)
+# -----------------------------
+t = P["panel_thk"]
+# Top (+Z) y Bottom (-Z)
+top = make_plate(P["bus_len_x"], P["bus_wid_y"], t, center=(0,0,bus["hz"]))
+bot = make_plate(P["bus_len_x"], P["bus_wid_y"], t, center=(0,0,-bus["hz"]))
+# +X y -X (caras frontales al eje de empuje)
+px = make_plate(P["bus_wid_y"], P["bus_hei_z"], t, center=(bus["hx"], 0, 0), normal="X")
+nx = make_plate(P["bus_wid_y"], P["bus_hei_z"], t, center=(-bus["hx"], 0, 0), normal="X")
+# +Y y -Y (laterales)
+py = make_plate(P["bus_len_x"], P["bus_hei_z"], t, center=(0,bus["hy"],0), normal="Y")
+ny = make_plate(P["bus_len_x"], P["bus_hei_z"], t, center=(0,-bus["hy"],0), normal="Y")
+
+objs_panels = []
+for shp, name, col in [
+    (top,"PANELS_TOP",(0.85,0.85,0.90)),
+    (bot,"PANELS_BOT",(0.85,0.85,0.90)),
+    (px,"PANELS_X_PLUS",(0.82,0.82,0.86)),
+    (nx,"PANELS_X_MINUS",(0.82,0.82,0.86)),
+    (py,"PANELS_Y_PLUS",(0.82,0.82,0.86)),
+    (ny,"PANELS_Y_MINUS",(0.82,0.82,0.86)),
+]:
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shp
+    add(o, name, col, grp_pan)
+    objs_panels.append(o)
+
+# -----------------------------
+# 2) Cuadernas internas (retícula 300 mm)
+# -----------------------------
+rib_pitch = P["rib_pitch"]
+# Marcos longitudinales en X (perfiles L simplificados como placas)
+# Haremos marcos tipo diafragma en planos YZ y XZ
+ribs = []
+# Diafragmas cada 300 mm a lo largo de X
+num_dx = int(P["bus_len_x"] // rib_pitch) - 1
+for i in range(1, num_dx+1):
+    x = -bus["hx"] + i*rib_pitch
+    plate = make_plate(P["bus_wid_y"]-2*t, P["bus_hei_z"]-2*t, P["L_thk"],
+                       center=(x, 0, 0), normal="X")
+    o = doc.addObject("Part::Feature", f"RIB_X_{i:02d}")
+    o.Shape = plate
+    add(o, o.Label, (0.75,0.75,0.78), grp_ribs)
+    ribs.append(o)
+# Diafragmas cada 300 mm a lo largo de Y
+num_dy = int(P["bus_wid_y"] // rib_pitch) - 1
+for j in range(1, num_dy+1):
+    y = -bus["hy"] + j*rib_pitch
+    plate = make_plate(P["bus_len_x"]-2*t, P["bus_hei_z"]-2*t, P["L_thk"],
+                       center=(0, y, 0), normal="Y")
+    o = doc.addObject("Part::Feature", f"RIB_Y_{j:02d}")
+    o.Shape = plate
+    add(o, o.Label, (0.75,0.75,0.78), grp_ribs)
+    ribs.append(o)
+
+# -----------------------------
+# 3) Anillo interfaz al lanzador (en -Z)
+# -----------------------------
+ring_OD = P["launch_ring_OD"]
+ring_ID = ring_OD - P["payload_ring_W"]  # ancho anillo ~ 0.20 m
+ring_thk = P["launch_ring_thk"]
+# Sólido anular
+cyl_out = Part.makeCylinder(ring_OD/2.0, ring_thk, vector(0,0,-bus["hz"]-ring_thk), vector(0,0,1))
+cyl_in = Part.makeCylinder(ring_ID/2.0, ring_thk+1.0, vector(0,0,-bus["hz"]-ring_thk-0.5), vector(0,0,1))
+ring = cyl_out.cut(cyl_in)
+
+# Taladros en BCD
+bolt_R = P["launch_ring_BCD"]/2.0
+for k in range(P["bolt_count"]):
+    ang = 2.0*math.pi * k/float(P["bolt_count"])
+    bx = bolt_R*math.cos(ang)
+    by = bolt_R*math.sin(ang)
+    hole = Part.makeCylinder(P["bolt_diameter"]/2.0, ring_thk+2.0, vector(bx,by,-bus["hz"]-ring_thk-1.0), vector(0,0,1))
+    ring = ring.cut(hole)
+
+launch = doc.addObject("Part::Feature", "LAUNCH_RING")
+launch.Shape = ring
+add(launch, "LAUNCH_RING", (0.9,0.8,0.2), grp_launch)
+
+# -----------------------------
+# 4) Ala solar (3 subpaneles) en +Y
+# -----------------------------
+wing_root_y = bus["hy"] + P["wing_thk"]/2.0
+sub_len = P["subpanel_len_y"]
+sub_wid = P["wing_wid_x"]
+sub_thk = P["wing_thk"]
+
+subpanels = []
+for idx in range(3):
+    cy = wing_root_y + (idx+0.5)*sub_len
+    shp = make_plate(sub_wid, sub_len, sub_thk, center=(0, cy, 0), normal="Z")
+    o = doc.addObject("Part::Feature", f"PANEL_{chr(ord('A')+idx)}")
+    o.Shape = shp
+    add(o, o.Label, (0.1,0.25,0.75), grp_solar)
+    subpanels.append(o)
+
+# Eje raíz (drive) y cojinete
+root_axis = make_cyl(P["root_shaft_OD"], 1.5*sub_wid, center=(0, bus["hy"], 0), axis="Y")
+root_cyl = doc.addObject("Part::Feature", "ROOT_DRIVE")
+root_cyl.Shape = root_axis
+add(root_cyl, "ROOT_DRIVE", (0.3,0.3,0.3), grp_solar)
+
+bearing = Part.makeCylinder(P["bearing_OD"]/2.0, P["panel_thk"], vector(0,bus["hy"]-sub_thk/2.0,0), vector(0,1,0))
+bearing_in = Part.makeCylinder(P["bearing_ID"]/2.0, P["panel_thk"]+1.0, vector(0,bus["hy"]-sub_thk/2.0-0.5,0), vector(0,1,0))
+brg = bearing.cut(bearing_in)
+brg_obj = doc.addObject("Part::Feature", "ROOT_BEARING")
+brg_obj.Shape = brg
+add(brg_obj, "ROOT_BEARING", (0.5,0.5,0.5), grp_solar)
+
+# -----------------------------
+# 5) Propulsión VASIMR + bastidor + tanques + líneas + radiadores
+# -----------------------------
+# Bastidor: trípode de 3 vigas caja desde la cara -X
+frame_len = P["frame_cantilever"]
+beam_w, beam_h, beam_t = P["frame_box"]
+beam_offsets = [
+    ( -bus["hx"],  0.4*bus["hy"],  0.3*bus["hz"]),
+    ( -bus["hx"], -0.45*bus["hy"], 0.0),
+    ( -bus["hx"],  0.1*bus["hy"], -0.4*bus["hz"])
+]
+frame_parts = []
+for i, (bx, by, bz) in enumerate(beam_offsets, start=1):
+    # Representamos la viga como caja hueca simple hacia -X (saliente)
+    bar = Part.makeBox(frame_len, beam_w, beam_h)
+    # Centrar sección y orientar a lo largo de -X (pero creamos en +X y luego movemos)
+    bar.translate(vector(0, -beam_w/2.0, -beam_h/2.0))
+    bar.translate(vector(-bus["hx"]-frame_len, by, bz))
+    o = doc.addObject("Part::Feature", f"THRUSTER_FRAME_{i}")
+    o.Shape = bar
+    add(o, o.Label, (0.6,0.6,0.7), grp_prop)
+    frame_parts.append(o)
+
+# Motor VASIMR (eje a lo largo +X; boquilla hacia -X, exterior a la cara -X)
+engine_len = P["vasimr_len"]
+engine_D = P["vasimr_D"]
+nozzle_D = P["nozzle_D"]
+# Colocamos el centro del motor justo fuera de la cara -X
+eng_x0 = -bus["hx"] - frame_len - engine_len*0.6  # posición aproximada
+eng_main = make_cyl(engine_D, engine_len*0.7, center=(eng_x0, 0, 0), axis="X")
+eng_tail = make_cyl(engine_D*0.85, engine_len*0.2, center=(eng_x0+engine_len*0.7, 0, 0), axis="X")
+eng_nozz = Part.makeCone(nozzle_D/2.0, engine_D/2.0, engine_len*0.1, vector(eng_x0-engine_len*0.1,0,0), vector(1,0,0))
+engine_shape = eng_main.fuse(eng_tail).fuse(eng_nozz)
+engine_obj = doc.addObject("Part::Feature", "VASIMR_ENGINE")
+engine_obj.Shape = engine_shape
+add(engine_obj, "VASIMR_ENGINE", (0.8,0.5,0.1), grp_prop)
+
+# Tanques (2) con cúpulas hemisféricas internamente en +X
+tank_objs = []
+tank_spacing = 0.30*mm
+tank_R = P["tank_OD"]/2.0
+L_cyl = P["tank_len_cyl"]
+x_center_tanks = 0.20*mm  # desplazados a +X dentro del bus
+y_pos = +0.30*mm
+z_pos = 0.0
+for ti in range(P["num_tanks"]):
+    sign = 1 if ti%2==0 else -1
+    cy = sign * y_pos
+    # cilindro
+    cyl = make_cyl(P["tank_OD"], L_cyl, center=(x_center_tanks - L_cyl/2.0, cy, z_pos), axis="X")
+    # cúpulas
+    hemi_front = make_sphere(P["tank_OD"], center=(x_center_tanks + L_cyl/2.0, cy, z_pos))
+    hemi_back = make_sphere(P["tank_OD"], center=(x_center_tanks - L_cyl/2.0, cy, z_pos))
+    # Cortar a hemisferios
+    cut_plane_front = Part.makeBox(2*tank_R, 2*tank_R, 2*tank_R, vector(x_center_tanks, cy-tank_R, z_pos-tank_R))
+    cut_plane_back = Part.makeBox(2*tank_R, 2*tank_R, 2*tank_R, vector(x_center_tanks-2*tank_R, cy-tank_R, z_pos-tank_R))
+    hemi_front = hemi_front.common(cut_plane_front)
+    hemi_back = hemi_back.common(cut_plane_back)
+    tank = cyl.fuse(hemi_front).fuse(hemi_back)
+    o = doc.addObject("Part::Feature", f"TANK_{'A' if ti==0 else 'B'}")
+    o.Shape = tank
+    add(o, o.Label, (0.2,0.5,0.6), grp_prop)
+    tank_objs.append(o)
+    y_pos += tank_spacing
+
+# Líneas de propelente (tubos sencillos desde tanques a motor)
+line_len = abs(eng_x0) + bus["hx"] + 0.2*mm
+for li, tk in enumerate(tank_objs, start=1):
+    # Trazado recto por +X desde tanque al motor
+    ly = tk.Shape.BoundBox.Center.y
+    lz = tk.Shape.BoundBox.Center.z
+    start_x = tk.Shape.BoundBox.Center.x + tank_R
+    tube = make_tube(P["line_OD"], P["line_t"], line_len, center=(start_x, ly, lz), axis="X")
+    o = doc.addObject("Part::Feature", f"LINE_{li}")
+    o.Shape = tube
+    add(o, o.Label, (0.6,0.6,0.2), grp_prop)
+
+# Radiadores en ±X (placas a offset desde caras del bus)
+rad_x = bus["hx"] + P["rad_offset_x"]
+for s, name in [ (1,"RADIATOR_+X"), (-1,"RADIATOR_-X") ]:
+    center = (s*rad_x, 0, 0)
+    shp = make_plate(P["rad_wid_x"], P["rad_len_y"], P["rad_thk"], center=center, normal="X")
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shp
+    add(o, name, (0.9,0.9,0.95), grp_prop)
+
+# -----------------------------
+# 6) Antenas: HGA (paraboloide aprox) + 2 LGA en ±X
+# -----------------------------
+# Plato HGA aproximado: sustracción de esfera a cilindro para concavidad
+D = P["hga_dish_D"]
+f = P["hga_focus"]  # no se usa para parabola exacta en esta aproximación
+hga_thk = 0.006*mm
+dish_depth = D*D/(16.0*max(f, 1.0))  # profundidad orientativa
+# Crear casquete esférico y laminarlo
+sphere = Part.makeSphere(D/2.0, vector(0,0,-bus["hz"] - P["payload_ring_depth"] - D/4.0))
+cut_box = Part.makeBox(D, D, D, vector(-D/2.0, -D/2.0, -bus["hz"] - P["payload_ring_depth"] - D))
+dish_raw = sphere.common(cut_box)
+inner = dish_raw.copy()
+inner.translate(vector(0,0,hga_thk))
+hga = dish_raw.cut(inner)
+
+hga_obj = doc.addObject("Part::Feature", "HGA_DISH")
+hga_obj.Shape = hga
+add(hga_obj, "HGA_DISH", (0.9,0.9,0.9), grp_ant)
+
+# Brazo del alimentador
+arm = Part.makeCylinder(0.015*mm, P["hga_arm_len"], vector(0,0,-bus["hz"]-P["payload_ring_depth"]), vector(0,0,-1))
+arm_obj = doc.addObject("Part::Feature", "HGA_ARM")
+arm_obj.Shape = arm
+add(arm_obj, "HGA_ARM", (0.6,0.6,0.6), grp_ant)
+
+# Alimentador al foco (posición aproximada a distancia f)
+feed = Part.makeSphere(0.05*mm, vector(0,0,-bus["hz"]-P["payload_ring_depth"]-f))
+feed_obj = doc.addObject("Part::Feature", "HGA_FEED")
+feed_obj.Shape = feed
+add(feed_obj, "HGA_FEED", (0.85,0.3,0.3), grp_ant)
+
+# LGAs en ±X
+lx, ly, lz = P["lga_size"]
+for s, name in [(1,"LGA_X+"),(-1,"LGA_X-")]:
+    box = Part.makeBox(lx, ly, lz, vector(s*bus["hx"]-lx/2.0, -ly/2.0, lz/2.0))
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = box
+    add(o, name, (0.7,0.7,0.7), grp_ant)
+
+# -----------------------------
+# 7) Payload ring y sensor disco (en -Z)
+# -----------------------------
+ring_OD = P["payload_ring_OD"]
+ring_ID = ring_OD - P["payload_ring_W"]
+depth = P["payload_ring_depth"]
+pr_out = Part.makeCylinder(ring_OD/2.0, depth, vector(0,0,-bus["hz"]-depth), vector(0,0,-1))
+pr_in  = Part.makeCylinder(ring_ID/2.0, depth+1.0, vector(0,0,-bus["hz"]-depth-0.5), vector(0,0,-1))
+payload_ring = pr_out.cut(pr_in)
+pr_obj = doc.addObject("Part::Feature", "PAYLOAD_RING")
+pr_obj.Shape = payload_ring
+add(pr_obj, "PAYLOAD_RING", (0.6,0.65,0.7), grp_payload)
+
+sensor = Part.makeCylinder(P["sensor_disc_D"]/2.0, P["sensor_disc_thk"],
+                           vector(0,0,-bus["hz"]-depth-P["sensor_disc_thk"]), vector(0,0,-1))
+sd_obj = doc.addObject("Part::Feature", "SENSOR_DISC")
+sd_obj.Shape = sensor
+add(sd_obj, "SENSOR_DISC", (0.4,0.5,0.8), grp_payload)
+
+# -----------------------------
+# Propiedades de material (metadata)
+# -----------------------------
+def set_mat(obj, mat_name):
+    obj.addProperty("App::PropertyString","Material","Physics","Material name").Material = mat_name
+
+for o in objs_panels:
+    set_mat(o, "Al 7075-T6 (facesheet) + Honeycomb core")
+for r in ribs:
+    set_mat(r, "Al 6061-T6")
+set_mat(launch, "Ti-6Al-4V")
+for sp in subpanels:
+    set_mat(sp, "CFRP facesheets (wing), core foam/honeycomb")
+set_mat(root_cyl, "Steel/Ti shaft")
+set_mat(brg_obj, "Crossed roller bearing")
+
+set_mat(engine_obj, "VASIMR assembly")
+for f in frame_parts:
+    set_mat(f, "Ti-6Al-4V")
+for tk in tank_objs:
+    set_mat(tk, "CFRP liner/tank")
+for i in range(1, P["num_tanks"]+1):
+    try:
+        set_mat(doc.getObject(f"LINE_{i}"), "Inconel 625 pipe")
+    except Exception:
+        pass
+try:
+    set_mat(doc.getObject("RADIATOR_+X"), "CFRP facesheets radiator")
+    set_mat(doc.getObject("RADIATOR_-X"), "CFRP facesheets radiator")
+except Exception:
+    pass
+set_mat(hga_obj, "Al/Composite reflective")
+set_mat(pr_obj, "Al 6061-T6")
+set_mat(sd_obj, "Instrument/antenna payload")
+
+# -----------------------------
+# Vista y finalización
+# -----------------------------
+doc.recompute()
+try:
+    Gui.SendMsgToActiveView("ViewFit")
+    Gui.activeDocument().activeView().viewAxonometric()
+except Exception:
+    pass
+
+print("SAT_ASM model created. Adjust parameters P[...] as needed (e.g., num_tanks for 'gran combustible').")

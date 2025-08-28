@@ -1,0 +1,462 @@
+# -*- coding: utf-8 -*-
+# FreeCAD 2U “cubo circular” with micro Hall/ion thruster, integrated panels, tank, PPU, shielding.
+import FreeCAD as App
+import Part
+import math
+
+DOC_NAME = "CubeSat2U_CircularCube"
+
+def mm(x): return float(x)
+
+# -------------------------------
+# Parámetros principales (ajustables)
+# -------------------------------
+P = {
+    # Envolvente 2U
+    "L": mm(100),
+    "W": mm(100),
+    "H": mm(227),
+    "wall": mm(1.6),
+
+    # Carriles
+    "rail_w": mm(8.8),
+    "rail_h": mm(1.8),   # protrusión sobre la piel
+    "edge_fillet": mm(1.0),  # radios externos (se intenta aplicar)
+
+    # Recesos paneles solares enrasados
+    "panel_window": mm(94),
+    "panel_recess": mm(1.7),
+    "panel_margin": mm(0.3),
+
+    # Estructura interna
+    "tube_OD": mm(74),     # Ø exterior
+    "tube_t": mm(1.2),     # espesor
+    "tube_L": mm(190),
+
+    # Bulkheads
+    "bh_OD": mm(94),
+    "bh_t": mm(2.5),
+    "bh_to_skin_front": mm(10),
+    "bh_to_skin_rear": mm(10),
+
+    # Patrones de fijación (típicos)
+    "pcd_cyl_to_bh": mm(66),    # para M2.5 al tubo central
+    "pcd_bh_to_chassis": mm(86),# 8x M3 a chasis (opcional)
+
+    # Montaje propulsor (Hall/iónico)
+    "thr_can_OD": mm(60),   # can del thruster
+    "thr_can_L": mm(50),
+    "thr_flange_OD": mm(76),
+    "thr_clear_bore": mm(60),
+    "thr_pcd_primary": mm(64),  # 4x M3
+    "thr_pcd_secondary": mm(46),# 6x M2.5
+    "thr_hole_M3": mm(3.2),
+    "thr_hole_M25": mm(2.7),
+    "pass_through": mm(7),  # pasamuros Ø7
+    "slot_L": mm(12),
+    "slot_W": mm(3),
+
+    # Plenum/cavidad servicio (anular interna)
+    "plenum_Ri": mm(38),    # radio interno ~ algo > tubo_OD/2
+    "plenum_Ro": mm(46),
+    "plenum_t": mm(8),      # espesor axial
+
+    # Tanque coaxial
+    "tank_OD": mm(58),
+    "tank_L": mm(100),
+    "strap_w": mm(8),
+    "strap_t": mm(0.5),
+
+    # PPU
+    "ppu_L": mm(90),
+    "ppu_W": mm(80),
+    "ppu_H": mm(15),
+    "standoff_D": mm(5),
+    "standoff_H": mm(10),
+
+    # Radiadores
+    "rad_L": mm(100),
+    "rad_W": mm(60),
+    "rad_t": mm(1.0),
+
+    # Revestimientos/Blindajes
+    "skirt_t": mm(0.9),     # faldón Al propulsor
+    "mu_tape_t": mm(0.3),   # anillo mu-metal (representación)
+}
+
+# -------------------------------
+# Documento
+# -------------------------------
+if App.ActiveDocument is None or App.ActiveDocument.Name != DOC_NAME:
+    doc = App.newDocument(DOC_NAME)
+else:
+    doc = App.ActiveDocument
+
+def add_obj(shape, label, parent=None):
+    obj = doc.addObject("Part::Feature", label)
+    obj.Shape = shape
+    if parent:
+        parent.addObject(obj)
+    return obj
+
+def ensure_part(label):
+    part = doc.addObject("App::Part", label)
+    return part
+
+# Coordenadas base
+L, W, H = P["L"], P["W"], P["H"]
+wall = P["wall"]
+cx, cy, z0 = 0.0, 0.0, 0.0
+minx, maxx = -L/2.0, L/2.0
+miny, maxy = -W/2.0, W/2.0
+minz, maxz = 0.0, H
+
+# -------------------------------
+# Chasis: caja hueca + carriles
+# -------------------------------
+Asm = ensure_part("Assembly")
+Chassis = ensure_part("Chassis")
+Asm.addObject(Chassis)
+
+# Caja externa
+outer = Part.makeBox(L, W, H, App.Vector(minx, miny, minz))
+inner = Part.makeBox(L-2*wall, W-2*wall, H-2*wall, App.Vector(minx+wall, miny+wall, minz+wall))
+shell = outer.cut(inner)
+
+# Carriles (4) con protrusión rail_h desde la piel
+rw, rh = P["rail_w"], P["rail_h"]
+rails = []
+# Esquina (-x,-y)
+r1 = Part.makeBox(rw, rw, H, App.Vector(minx - rh, miny - rh, minz))
+# (+x,-y)
+r2 = Part.makeBox(rw, rw, H, App.Vector(maxx - rw + rh, miny - rh, minz))
+# (-x,+y)
+r3 = Part.makeBox(rw, rw, H, App.Vector(minx - rh, maxy - rw + rh, minz))
+# (+x,+y)
+r4 = Part.makeBox(rw, rw, H, App.Vector(maxx - rw + rh, maxy - rw + rh, minz))
+for r in (r1, r2, r3, r4):
+    rails.append(r)
+chassis_shape = shell.fuse(rails)
+
+# Intento de filete en aristas externas principales (puede requerir retoque manual)
+try:
+    # Selección heurística de aristas verticales cercanas a esquinas
+    edges_to_fillet = []
+    for e in chassis_shape.Edges:
+        v = e.Vertexes
+        if len(v) == 2:
+            p1, p2 = v[0].Point, v[1].Point
+            if abs(p1.x - p2.x) < 1e-6 and abs(p1.y - p2.y) < 1e-6 and abs(p1.z - p2.z) > 0.1:
+                # Vertical edge
+                # Sólo las 4 cercanas a las esquinas del cubo
+                if (abs(p1.x - minx) < 0.5 or abs(p1.x - maxx) < 0.5) and (abs(p1.y - miny) < 0.5 or abs(p1.y - maxy) < 0.5):
+                    edges_to_fillet.append(e)
+    chassis_shape = chassis_shape.makeFillet(P["edge_fillet"], edges_to_fillet)
+except Exception:
+    pass
+
+add_obj(chassis_shape, "ChassisShell", Chassis)
+
+# -------------------------------
+# Recesos de paneles solares + ventanas térmicas
+# -------------------------------
+Panels = ensure_part("SolarPanels")
+Asm.addObject(Panels)
+win = P["panel_window"]
+rec = P["panel_recess"]
+marg = P["panel_margin"]
+
+# Caras: +X, +Y, -Y (tres caras)
+faces = [
+    ("Recess_PosX", App.Vector(maxx - rec, -win/2.0, (H - win)/2.0), App.Vector(1,0,0)),
+    ("Recess_PosY", App.Vector(-win/2.0, maxy - rec, (H - win)/2.0), App.Vector(0,1,0)),
+    ("Recess_NegY", App.Vector(-win/2.0, miny, (H - win)/2.0), App.Vector(0,-1,0)),
+]
+recess_cuts = []
+thermal_cuts = []
+for name, base, normal in faces:
+    # Rectángulo del rebaje
+    recess_box = Part.makeBox(win, rec, win, base)
+    # Alinear profundidad hacia el interior de la pared (ya posicionado)
+    recess_cuts.append(recess_box)
+
+    # Ventana térmica interna más pequeña, alineada detrás del rebaje
+    t_off = wall + mm(0.2)  # deja cara externa intacta
+    th = mm(2.0)            # atraviesa la pared interior local
+    therm_box = Part.makeBox(win - 2*marg, th, win - 2*marg,
+                             App.Vector(base.x + marg, base.y - th - t_off, base.z + marg))
+    thermal_cuts.append(therm_box)
+
+# Aplicar cortes en chasis
+cut_shape = chassis_shape.cut(Part.makeCompound(recess_cuts))
+cut_shape = cut_shape.cut(Part.makeCompound(thermal_cuts))
+# Actualiza objeto chasis
+Chassis.removeObject(Chassis.Group[0])
+add_obj(cut_shape, "ChassisShell", Chassis)
+
+# Visualización de “placas” de radiador en el exterior cerca de la trasera
+Radiators = ensure_part("Radiators")
+Asm.addObject(Radiators)
+rad = []
+rad1 = Part.makeBox(P["rad_L"], P["rad_t"], P["rad_W"],
+                    App.Vector(-P["rad_L"]/2.0, maxy - P["rad_t"], H - P["bh_to_skin_rear"] - P["rad_W"]))
+rad2 = Part.makeBox(P["rad_L"], P["rad_t"], P["rad_W"],
+                    App.Vector(-P["rad_L"]/2.0, miny, H - P["bh_to_skin_rear"] - P["rad_W"]))
+rad.extend([rad1, rad2])
+add_obj(Part.makeCompound(rad), "RadiatorPlates", Radiators)
+
+# -------------------------------
+# Estructura interna: tubo central y bulkheads
+# -------------------------------
+Struct = ensure_part("Structure")
+Asm.addObject(Struct)
+
+tube_OD = P["tube_OD"]
+tube_t  = P["tube_t"]
+tube_L  = P["tube_L"]
+
+bh_OD, bh_t = P["bh_OD"], P["bh_t"]
+bh_front_z = minz + P["bh_to_skin_front"]
+bh_rear_z  = maxz - P["bh_to_skin_rear"]
+bh_mid_z   = (bh_front_z + bh_rear_z)/2.0
+
+# Tubo central (hueco)
+tube_outer = Part.makeCylinder(tube_OD/2.0, tube_L, App.Vector(0,0,(H - tube_L)/2.0), App.Vector(0,0,1))
+tube_inner = Part.makeCylinder(tube_OD/2.0 - tube_t, tube_L + mm(0.2), App.Vector(0,0,(H - tube_L)/2.0 - mm(0.1)), App.Vector(0,0,1))
+tube = tube_outer.cut(tube_inner)
+add_obj(tube, "CentralTube_Al6061", Struct)
+
+def make_bulkhead(zc, label, rear=False):
+    disk = Part.makeCylinder(bh_OD/2.0, bh_t, App.Vector(0,0,zc - bh_t/2.0), App.Vector(0,0,1))
+    # Aligerado: gran luz central para tubo + recortes radiales
+    hole_tube = Part.makeCylinder(tube_OD/2.0 + mm(0.2), bh_t + mm(0.2), App.Vector(0,0,zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1))
+    bh = disk.cut(hole_tube)
+
+    # Tornillería al tubo (6x M2.5 en PCD ~66 mm)
+    bolts = []
+    n_b = 6
+    for i in range(n_b):
+        ang = 2*math.pi*i/n_b
+        x = (P["pcd_cyl_to_bh"]/2.0)*math.cos(ang)
+        y = (P["pcd_cyl_to_bh"]/2.0)*math.sin(ang)
+        bolts.append(Part.makeCylinder(mm(1.4), bh_t + mm(0.2), App.Vector(x,y,zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1)))
+    if bolts:
+        bh = bh.cut(Part.makeCompound(bolts))
+
+    if rear:
+        # Barrenos de propulsor en bulkhead trasera
+        # Clear bore Ø60
+        clear_bore = Part.makeCylinder(P["thr_clear_bore"]/2.0, bh_t + mm(0.2), App.Vector(0,0,zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1))
+        # 4x M3 PCD 64
+        h1 = []
+        for i in range(4):
+            ang = math.radians(45) + i*(math.pi/2.0)
+            x = (P["thr_pcd_primary"]/2.0)*math.cos(ang)
+            y = (P["thr_pcd_primary"]/2.0)*math.sin(ang)
+            h1.append(Part.makeCylinder(P["thr_hole_M3"]/2.0, bh_t + mm(0.2), App.Vector(x,y,zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1)))
+        # 6x M2.5 PCD 46
+        h2 = []
+        for i in range(6):
+            ang = i*(2*math.pi/6.0)
+            x = (P["thr_pcd_secondary"]/2.0)*math.cos(ang)
+            y = (P["thr_pcd_secondary"]/2.0)*math.sin(ang)
+            h2.append(Part.makeCylinder(P["thr_hole_M25"]/2.0, bh_t + mm(0.2), App.Vector(x,y,zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1)))
+        # Pasamuros 2x Ø7 a ±30°
+        pass1 = Part.makeCylinder(P["pass_through"]/2.0, bh_t + mm(0.2), App.Vector((bh_OD/2.0 - mm(10))*math.cos(math.radians(30)), (bh_OD/2.0 - mm(10))*math.sin(math.radians(30)), zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1))
+        pass2 = Part.makeCylinder(P["pass_through"]/2.0, bh_t + mm(0.2), App.Vector((bh_OD/2.0 - mm(10))*math.cos(math.radians(210)), (bh_OD/2.0 - mm(10))*math.sin(math.radians(210)), zc - bh_t/2.0 - mm(0.1)), App.Vector(0,0,1))
+        # Ranura 12x3 (rectangular) a -60°
+        slot_len, slot_w = P["slot_L"], P["slot_W"]
+        slot_box = Part.makeBox(slot_len, bh_t + mm(0.2), slot_w, App.Vector(-slot_len/2.0, zc - bh_t/2.0 - mm(0.1), -slot_w/2.0))
+        # Colocación radial de la ranura
+        theta = math.radians(-60)
+        R_slot = bh_OD/2.0 - mm(12)
+        slot_box.Placement.Base = App.Vector(R_slot*math.cos(theta) - slot_len/2.0, zc - bh_t/2.0 - mm(0.1), R_slot*math.sin(theta) - slot_w/2.0)
+        # Combina y resta
+        bh = bh.cut(clear_bore)
+        bh = bh.cut(Part.makeCompound(h1 + h2 + [pass1, pass2, slot_box]))
+
+        # Cavidad anular del plenum (lado interno, hacia +Z): rebaje en bulkhead
+        pl_i, pl_o, pl_t = P["plenum_Ri"], P["plenum_Ro"], P["plenum_t"]
+        pl_ext = Part.makeCylinder(pl_o, pl_t, App.Vector(0,0,zc), App.Vector(0,0,1))
+        pl_int = Part.makeCylinder(pl_i, pl_t + mm(0.2), App.Vector(0,0,zc - mm(0.1)), App.Vector(0,0,1))
+        pl_ann = pl_ext.cut(pl_int)
+        # Rebaje limitado al disco
+        bh = bh.cut(pl_ann)
+
+    return add_obj(bh, label, Struct)
+
+bh_front = make_bulkhead(bh_front_z, "Bulkhead_Front")
+bh_mid   = make_bulkhead(bh_mid_z, "Bulkhead_Center")
+bh_rear  = make_bulkhead(bh_rear_z, "Bulkhead_Rear", rear=True)
+
+# Bastidores esquineros (L 8x8x1.5) internos
+Frames = ensure_part("CornerFrames")
+Asm.addObject(Frames)
+leg = mm(8); thick = mm(1.5)
+def L_profile(base_vec):
+    # Dos alas formando L
+    a = Part.makeBox(leg, thick, H- (P["bh_to_skin_front"]+P["bh_to_skin_rear"]), base_vec)
+    b = Part.makeBox(thick, leg, H- (P["bh_to_skin_front"]+P["bh_to_skin_rear"]), base_vec)
+    return a.fuse(b)
+
+# Posiciones aproximadas a lo largo de las aristas internas
+z_base = minz + P["bh_to_skin_front"]
+pL = []
+pL.append(L_profile(App.Vector(minx + wall, miny + wall, z_base)))
+pL.append(L_profile(App.Vector(maxx - wall - leg, miny + wall, z_base)))
+pL.append(L_profile(App.Vector(minx + wall, maxy - wall - leg, z_base)))
+pL.append(L_profile(App.Vector(maxx - wall - leg, maxy - wall - leg, z_base)))
+add_obj(Part.makeCompound(pL), "Corner_L_Profiles", Frames)
+
+# -------------------------------
+# Propulsor iónico (Hall/iónico): brida + can + faldón + anillo mu-metal
+# -------------------------------
+Thr = ensure_part("Thruster_Ion")
+Asm.addObject(Thr)
+
+# Brida de montaje al bulkhead trasero (lado +Z)
+flg = Part.makeCylinder(P["thr_flange_OD"]/2.0, mm(2.0), App.Vector(0,0, H), App.Vector(0,0,1))
+# Taladros en la brida (replica patrón bulkhead)
+holes = []
+# 4x M3
+for i in range(4):
+    ang = math.radians(45) + i*(math.pi/2.0)
+    x = (P["thr_pcd_primary"]/2.0)*math.cos(ang)
+    y = (P["thr_pcd_primary"]/2.0)*math.sin(ang)
+    holes.append(Part.makeCylinder(P["thr_hole_M3"]/2.0, mm(3.0), App.Vector(x,y, H - mm(0.5)), App.Vector(0,0,1)))
+# 6x M2.5
+for i in range(6):
+    ang = i*(2*math.pi/6.0)
+    x = (P["thr_pcd_secondary"]/2.0)*math.cos(ang)
+    y = (P["thr_pcd_secondary"]/2.0)*math.sin(ang)
+    holes.append(Part.makeCylinder(P["thr_hole_M25"]/2.0, mm(3.0), App.Vector(x,y, H - mm(0.5)), App.Vector(0,0,1)))
+# Clear bore
+holes.append(Part.makeCylinder(P["thr_clear_bore"]/2.0, mm(3.0), App.Vector(0,0, H - mm(0.5)), App.Vector(0,0,1)))
+flg = flg.cut(Part.makeCompound(holes))
+
+# Can del thruster
+can = Part.makeCylinder(P["thr_can_OD"]/2.0, P["thr_can_L"], App.Vector(0,0, H + mm(2.0)), App.Vector(0,0,1))
+
+# Faldón de blindaje (Al) alrededor del can
+skirt_outer = Part.makeCylinder(P["thr_can_OD"]/2.0 + mm(2.0), P["thr_can_L"]*0.6, App.Vector(0,0, H + mm(2.0)), App.Vector(0,0,1))
+skirt_inner = Part.makeCylinder(P["thr_can_OD"]/2.0 + mm(2.0) - P["skirt_t"], P["thr_can_L"]*0.6 + mm(0.2), App.Vector(0,0, H + mm(2.0) - mm(0.1)), App.Vector(0,0,1))
+skirt = skirt_outer.cut(skirt_inner)
+
+# Anillo mu-metal (representación)
+mu_outer = Part.makeCylinder(P["thr_flange_OD"]/2.0 + mm(1.0), mm(1.0), App.Vector(0,0, H + mm(1.0)), App.Vector(0,0,1))
+mu_inner = Part.makeCylinder(P["thr_flange_OD"]/2.0 + mm(1.0) - P["mu_tape_t"], mm(1.2), App.Vector(0,0, H + mm(0.9)), App.Vector(0,0,1))
+mu_ring = mu_outer.cut(mu_inner)
+
+add_obj(flg, "ThrusterFlange_Al6061", Thr)
+add_obj(can, "ThrusterCan_Ion", Thr)
+add_obj(skirt, "ThrusterSkirt_Shield", Thr)
+add_obj(mu_ring, "MuMetal_Ring", Thr)
+
+# -------------------------------
+# Tanque coaxial + soportes
+# -------------------------------
+TankAssy = ensure_part("Tank_Coaxial")
+Asm.addObject(TankAssy)
+tank = Part.makeCylinder(P["tank_OD"]/2.0, P["tank_L"], App.Vector(0,0, bh_mid_z - P["tank_L"]/2.0), App.Vector(0,0,1))
+add_obj(tank, "Tank_CFRP_Lined", TankAssy)
+
+# Tres flejes (soportes) de 8x0.5 mm en 120°
+strap_list = []
+R_strap = P["tube_OD"]/2.0 - mm(1.0)
+for i in range(3):
+    ang = i*(2*math.pi/3.0)
+    sx = R_strap*math.cos(ang)
+    sy = R_strap*math.sin(ang)
+    # Fleje como prisma largo a lo largo de Z, con pad PEEK (simplificado)
+    strap = Part.makeBox(P["strap_w"], P["strap_t"], P["tank_L"] + mm(10),
+                         App.Vector(sx - P["strap_w"]/2.0, sy - P["strap_t"]/2.0, bh_mid_z - (P["tank_L"] + mm(10))/2.0))
+    strap_list.append(strap)
+add_obj(Part.makeCompound(strap_list), "Tank_Straps", TankAssy)
+
+# -------------------------------
+# PPU + separadores
+# -------------------------------
+PPU = ensure_part("PPU")
+Asm.addObject(PPU)
+ppu = Part.makeBox(P["ppu_L"], P["ppu_W"], P["ppu_H"], App.Vector(-P["ppu_L"]/2.0, -P["ppu_W"]/2.0, bh_mid_z + mm(20)))
+add_obj(ppu, "PPU_Box", PPU)
+
+standoffs = []
+stz = bh_mid_z + mm(20) - P["standoff_H"]
+for sx in (-P["ppu_L"]/2.0 + mm(8), P["ppu_L"]/2.0 - mm(8)):
+    for sy in (-P["ppu_W"]/2.0 + mm(8), P["ppu_W"]/2.0 - mm(8)):
+        standoffs.append(Part.makeCylinder(P["standoff_D"]/2.0, P["standoff_H"], App.Vector(sx, sy, stz), App.Vector(0,0,1)))
+add_obj(Part.makeCompound(standoffs), "PPU_Standoffs_PEEK", PPU)
+
+# -------------------------------
+# Pasamuros traseros (ya taladrados en bulkhead). Representación en carcasa si se desea:
+# -------------------------------
+PassThru = ensure_part("RearPassThroughs")
+Asm.addObject(PassThru)
+# Corta en carcasa zonas de paso (opcional; requieren prensaestopas M8)
+pt1 = Part.makeCylinder(P["pass_through"]/2.0 + mm(1.5), wall + mm(2.0),
+                        App.Vector((bh_OD/2.0 + mm(3))*math.cos(math.radians(30)),
+                                   (bh_OD/2.0 + mm(3))*math.sin(math.radians(30)),
+                                   H - wall - (wall + mm(2.0))))
+pt2 = Part.makeCylinder(P["pass_through"]/2.0 + mm(1.5), wall + mm(2.0),
+                        App.Vector((bh_OD/2.0 + mm(3))*math.cos(math.radians(210)),
+                                   (bh_OD/2.0 + mm(3))*math.sin(math.radians(210)),
+                                   H - wall - (wall + mm(2.0))))
+add_obj(Part.makeCompound([pt1, pt2]), "RearGlandVolumes", PassThru)
+
+# -------------------------------
+# Metadatos materiales (etiquetas)
+# -------------------------------
+for obj in Asm.Group:
+    for sub in getattr(obj, "Group", []):
+        try:
+            sub.addProperty("App::PropertyString", "Material", "Meta", "Material nominal")
+        except Exception:
+            pass
+
+# Etiquetado simple (no afecta a FEM si no asignas materiales en FEM WB)
+try:
+    for o in Chassis.Group:
+        o.Material = "Al 6061-T6"
+    for o in Struct.Group:
+        if "Tube" in o.Label or "Bulkhead" in o.Label:
+            o.Material = "Al 6061-T6"
+    for o in Thr.Group:
+        if "Flange" in o.Label or "Skirt" in o.Label:
+            o.Material = "Al 6061-T6"
+        if "MuMetal" in o.Label:
+            o.Material = "Mu-metal"
+        if "Can" in o.Label:
+            o.Material = "Ion Thruster Assy"
+    for o in TankAssy.Group:
+        if "Tank" in o.Label:
+            o.Material = "CFRP liner Ti6Al4V"
+        if "Straps" in o.Label:
+            o.Material = "Kevlar/Carbon straps (epoxy)"
+    for o in PPU.Group:
+        if "Standoffs" in o.Label:
+            o.Material = "PEEK"
+        else:
+            o.Material = "Al 6061-T6"
+    for o in Radiators.Group:
+        o.Material = "Al 6061-T6 (coating: high-e black)"
+except Exception:
+    pass
+
+doc.recompute()
+
+# -------------------------------
+# Exportación opcional a STEP (descomenta si quieres un único fichero)
+# -------------------------------
+# import ImportGui
+# objs = []
+# def collect(o, bag):
+#    if hasattr(o, "Shape") and not o.Shape.isNull():
+#        bag.append(o)
+#    if hasattr(o, "Group"):
+#        for g in o.Group:
+#            collect(g, bag)
+# collect(Asm, objs)
+# ImportGui.export(objs, App.getUserAppDataDir() + "CubeSat2U_CircularCube.step")
+
+print("Modelo 2U generado: chasis, recesos solares, estructura interna, bulkheads, propulsor iónico, tanque, PPU, radiadores.")

@@ -1,0 +1,705 @@
+# -*- coding: utf-8 -*-
+# Cassini–Huygens paramétrico para FreeCAD (Part Workbench)
+# Versión extendida: propulsión con gimbal, brazo robótico articulado y paneles desplegables.
+# Autor: adaptado para victor0989 (mejoras por assistant)
+
+import math
+import FreeCAD as App
+import Part
+
+try:
+    import FreeCADGui as Gui
+    HAS_GUI = True
+except Exception:
+    HAS_GUI = False
+
+# -----------------------
+# Parámetros (ajusta según necesites)
+# -----------------------
+SCALE = 1.0
+DEBUG_SEPARATE = True  # crea objetos separados para depuración
+
+# Feature switches
+ENABLE_VASIMR = True
+ENABLE_CUBETHR = True
+ENABLE_ROBOT_ARM = True
+ENABLE_DEPLOY_PANELS = True
+
+# Antena de alta ganancia (HGA)
+HGA_DIAM = 4.0
+HGA_DEPTH = 0.45
+HGA_THK   = 0.020
+HGA_HUB_R = 0.25
+
+# Bus
+BUS_HEIGHT = 1.8
+BUS_FLAT2FLAT = 2.0
+BUS_TOP_TO_HGA = 0.3
+
+# RTGs / Booms
+RTG_RADIUS = 0.20
+RTG_LENGTH = 3.2
+RTG_BOOM_LEN = 1.8
+RTG_BOOM_R = 0.05
+
+# LGA
+LGA_DIAM = 0.5
+LGA_DEPTH = 0.07
+LGA_THK = 0.006
+
+# Magnetómetro
+MAG_BOOM_LEN = 11.0
+MAG_BOOM_R = 0.03
+
+# Huygens
+HUY_DIAM = 2.7
+HUY_THK_CENTER = 0.60
+HUY_OFFSET_FROM_BUS = 0.4
+
+# Blindajes y extras (opcional)
+RADIATION_SHIELD_THK = 0.05
+
+# --- NUEVO: Propulsor cúbico tipo CubeSat (módulo motor) ---
+CUBE_THR_SIZE = 0.60     # arista del cubo principal
+CUBE_THR_WALL = 0.02     # grosor de pared
+CUBE_THR_NOZZLE_D = 0.25 # diámetro tobera circular
+CUBE_THR_NOZZLE_L = 0.35 # longitud tobera
+
+# --- NUEVO: VASIMR iónicos (x2) ---
+VASIMR_CORE_R   = 0.08   # radio tubo de plasma
+VASIMR_CORE_L   = 1.25   # longitud tubo de plasma
+VASIMR_SHROUD_R = 0.22   # radio cubriente (carena)
+VASIMR_SHROUD_L = 0.85   # longitud carena
+VASIMR_NOZZLE_L = 0.45   # longitud campana magnética
+VASIMR_COIL_R   = 0.14   # radio mayor de las bobinas toroidales
+VASIMR_COIL_r   = 0.02   # radio menor de las bobinas
+VASIMR_COILS_N  = 4      # nº de bobinas a lo largo del eje
+VASIMR_PYLON_L  = 0.80   # longitud pilón de soporte
+VASIMR_PYLON_R  = 0.05   # radio pilón
+# Gimbal (grados)
+VASIMR_GIMBAL_PITCH = 5.0  # ± grados
+VASIMR_GIMBAL_YAW   = 4.0  # ± grados
+
+# Paneles solares desplegables
+PANEL_W = 1.2
+PANEL_H = 0.6
+PANEL_THK = 0.02
+PANEL_HINGE_R = 0.01
+PANEL_ACTUATOR_L = 0.12
+
+# Robot arm params (articulado 3 segments)
+ARM_SEG_LEN = 0.9
+ARM_SEG_R = 0.045
+ARM_JOINT_R = 0.06
+
+# Posición relativa “popa” para propulsión (eje Z aumenta hacia HGA)
+AFT_OFFSET_Z = (BUS_TOP_TO_HGA + BUS_HEIGHT*1.15)  # empuja hacia -Z
+
+# Tolerancia geométrica
+TOL = 1e-7
+
+# -----------------------
+# Utilidades robustas (misma lógica que antes)
+# -----------------------
+def unique_points(points, tol=TOL):
+    out = []
+    for p in points:
+        keep = True
+        for q in out:
+            if (p - q).Length <= tol:
+                keep = False
+                break
+        if keep:
+            out.append(p)
+    return out
+
+def make_closed_wire(points):
+    pts = list(points)
+    pts = unique_points(pts)
+    if len(pts) < 3:
+        raise ValueError("Se requieren al menos 3 puntos únicos para un wire cerrado (got %d)." % len(pts))
+    if (pts[0] - pts[-1]).Length > TOL:
+        pts.append(pts[0])
+    try:
+        poly = Part.makePolygon(pts)
+        w = Part.Wire(poly.Edges)
+        if not w.isClosed():
+            raise ValueError("Wire no quedó cerrado")
+        return w
+    except Exception as e:
+        edges = []
+        for i in range(len(pts)-1):
+            edges.append(Part.makeLine(pts[i], pts[i+1]))
+        try:
+            w = Part.Wire(edges)
+            if not w.isClosed():
+                edges.append(Part.makeLine(pts[-1], pts[0]))
+                w = Part.Wire(edges)
+            if not w.isClosed():
+                raise ValueError("Wire manual no quedó cerrado")
+            return w
+        except Exception as e2:
+            raise RuntimeError("No se pudo crear wire cerrado: %s | %s" % (e, e2))
+
+def is_wire_planar(wire, tol=TOL):
+    verts = [v.Point for v in wire.Vertexes]
+    if len(verts) < 3:
+        return True
+    p0 = verts[0]
+    p1 = None
+    for i in range(1, len(verts)):
+        if (verts[i] - p0).Length > tol:
+            p1 = verts[i]
+            i1 = i
+            break
+    if p1 is None:
+        return True
+    p2 = None
+    for j in range(i1+1, len(verts)):
+        v01 = p1 - p0
+        v02 = verts[j] - p0
+        if v01.cross(v02).Length > tol:
+            p2 = verts[j]
+            break
+    if p2 is None:
+        return True
+    normal = (p1 - p0).cross(p2 - p0)
+    nl = normal.Length
+    if nl <= tol:
+        return True
+    normal = App.Vector(normal.x/nl, normal.y/nl, normal.z/nl)
+    for v in verts:
+        if abs((v - p0).dot(normal)) > 1e-6:
+            return False
+    return True
+
+def project_points_to_plane(points, plane_point, plane_normal):
+    pn = plane_normal
+    l = pn.Length
+    if l == 0:
+        raise ValueError("plane_normal nulo")
+    pn = App.Vector(pn.x/l, pn.y/l, pn.z/l)
+    out = []
+    for p in points:
+        v = p - plane_point
+        d = v.dot(pn)
+        proj = p - pn * d
+        out.append(proj)
+    return out
+
+def safe_make_face_from_wire(wire):
+    if not hasattr(wire, "isClosed"):
+        raise ValueError("Se esperaba Part.Wire")
+    if not wire.isClosed():
+        pts = [v.Point for v in wire.Vertexes]
+        wire = make_closed_wire(pts)
+    if not is_wire_planar(wire):
+        verts = [v.Point for v in wire.Vertexes]
+        mean_y = sum([p.y for p in verts]) / len(verts)
+        plane_point = App.Vector(0, mean_y, 0)
+        plane_normal = App.Vector(0,1,0)
+        pts_proj = project_points_to_plane(verts, plane_point, plane_normal)
+        pts_proj = unique_points(pts_proj)
+        if len(pts_proj) < 3:
+            verts_u = unique_points(verts)
+            if len(verts_u) < 3:
+                raise RuntimeError("Wire degenerado: menos de 3 puntos tras proyección y fallback (len=%d)" % len(verts_u))
+            wire = make_closed_wire(verts_u)
+        else:
+            wire = make_closed_wire(pts_proj)
+    try:
+        f = Part.Face(wire)
+        return f
+    except Exception:
+        pts = [v.Point for v in wire.Vertexes]
+        pts = unique_points(pts)
+        if len(pts) < 3:
+            raise RuntimeError("No se pudo crear Face: wire con menos de 3 puntos (len=%d)" % len(pts))
+        if (pts[0] - pts[-1]).Length > TOL:
+            pts.append(pts[0])
+        poly = Part.makePolygon(pts)
+        return Part.Face(poly)
+
+def revolve_face(face, axis_pnt, axis_dir, angle_deg=360.0):
+    if not isinstance(axis_pnt, App.Vector):
+        axis_pnt = App.Vector(axis_pnt)
+    axis = App.Vector(axis_dir)
+    l = axis.Length
+    if l <= TOL:
+        raise ValueError("Axis_dir no puede ser nulo.")
+    axis = App.Vector(axis.x/l, axis.y/l, axis.z/l)
+    try:
+        return face.revolve(axis_pnt, axis, angle_deg)
+    except Exception as e:
+        b = getattr(face, "BoundBox", None)
+        raise RuntimeError("Fallo en revolve (BRep): %s ; Face.BoundBox=%s" % (e, b))
+
+# -----------------------
+# Subensambles geométricos base (tal cual)
+# -----------------------
+def regular_polygon_wire(n, flat2flat, z0=0.0):
+    R = flat2flat / 2.0 / math.cos(math.pi/n)
+    pts = []
+    for k in range(n):
+        ang = 2*math.pi*k/n + math.pi/n
+        pts.append(App.Vector(R*math.cos(ang), R*math.sin(ang), z0))
+    return make_closed_wire(pts)
+
+def build_hga_dish(diam, depth, thk, hub_r):
+    a = diam/2.0
+    h = depth
+    if h <= 1e-9:
+        return Part.makeCylinder(a, thk)
+    R = (a*a + h*h) / (2*h)
+    cz = h - R
+    p_rim_out = App.Vector(a, 0, 0)
+    p_tip_out = App.Vector(0, 0, h)
+    ang_rim = math.acos(max(min((R - 0)/R, 1.0), -1.0))
+    ang_tip = math.acos(max(min((R - h)/R, 1.0), -1.0))
+    ang_mid = (ang_rim + ang_tip)/2.0
+    x_mid = R*math.sin(ang_mid)
+    z_mid = cz + R*math.cos(ang_mid)
+    p_mid_out = App.Vector(x_mid, 0, z_mid)
+    arc_out = Part.Arc(p_rim_out, p_mid_out, p_tip_out).toShape()
+
+    a_in = max(a - thk, a*0.85)
+    h_in = max(h - thk, h*0.85)
+    if h_in <= 0:
+        h_in = h*0.5
+    R_in = (a_in*a_in + h_in*h_in)/(2*h_in)
+    cz_in = h_in - R_in
+    p_rim_in = App.Vector(a_in, 0, 0)
+    p_tip_in = App.Vector(0, 0, h_in)
+    ang_rim_in = math.acos(max(min((R_in - 0)/R_in, 1.0), -1.0))
+    ang_tip_in = math.acos(max(min((R_in - h_in)/R_in, 1.0), -1.0))
+    ang_mid_in = (ang_rim_in + ang_tip_in)/2.0
+    x_mid_in = R_in*math.sin(ang_mid_in)
+    z_mid_in = cz_in + R_in*math.cos(ang_mid_in)
+    p_mid_in = App.Vector(x_mid_in, 0, z_mid_in)
+    arc_in = Part.Arc(p_tip_in, p_mid_in, p_rim_in).toShape()
+
+    e_tip = Part.makeLine(p_tip_out, p_tip_in)
+    e_rim = Part.makeLine(p_rim_in, p_rim_out)
+    w = Part.Wire([arc_out, e_tip, arc_in, e_rim])
+    if not w.isClosed():
+        pts = [v.Point for v in w.Vertexes]
+        w = make_closed_wire(pts)
+    f = safe_make_face_from_wire(w)
+    try:
+        dish_solid = revolve_face(f, App.Vector(0,0,0), App.Vector(0,0,1), 360)
+    except Exception as e:
+        App.Console.PrintError("Error en revolve HGA: %s\n" % e)
+        dish_solid = Part.makeCylinder(a, thk+0.01)
+    hub_h = thk*4.0 + 0.05
+    try:
+        hub = Part.makeCylinder(hub_r, hub_h, App.Vector(0,0, h - hub_h))
+        return dish_solid.fuse(hub)
+    except Exception:
+        return dish_solid
+
+def build_bus_hex(height, flat2flat):
+    w = regular_polygon_wire(6, flat2flat, z0=0)
+    f = safe_make_face_from_wire(w)
+    prism = f.extrude(App.Vector(0,0,height))
+    try:
+        top_edges = [e for e in prism.Edges if abs(e.BoundBox.ZMax - height) < 1e-6]
+        if top_edges:
+            ch = prism.makeChamfer(min(0.03, height*0.05), top_edges)
+            return ch
+        return prism
+    except Exception:
+        return prism
+
+def build_cyl_tube(radius, length, axis='X'):
+    if axis == 'X':
+        return Part.makeCylinder(radius, length, App.Vector(0,0,0), App.Vector(1,0,0))
+    if axis == 'Y':
+        return Part.makeCylinder(radius, length, App.Vector(0,0,0), App.Vector(0,1,0))
+    return Part.makeCylinder(radius, length, App.Vector(0,0,0), App.Vector(0,0,1))
+
+def build_rtg(radius, length):
+    body = Part.makeCylinder(radius, length, App.Vector(0,0,0), App.Vector(1,0,0))
+    cap = Part.makeCone(radius*1.05, radius*0.8, radius*0.25, App.Vector(length,0,0), App.Vector(1,0,0))
+    try:
+        return body.fuse(cap)
+    except Exception:
+        return body
+
+def build_lga(diam, depth, thk):
+    return build_hga_dish(diam, depth, thk, hub_r=thk*3.0)
+
+def build_huygens(diam, thick_center):
+    a = diam/2.0
+    if thick_center <= 0:
+        raise ValueError("thick_center debe ser > 0")
+    h = thick_center/2.0
+    if h <= 1e-6:
+        return Part.makeSphere(a*0.5)
+    R = (a*a + h*h)/(2*h)
+    cz = h - R
+    p_rim = App.Vector(a, 0, 0)
+    p_top = App.Vector(0, 0, h)
+    ang_rim = math.acos(max(min((R - 0)/R, 1.0), -1.0))
+    ang_top = math.acos(max(min((R - h)/R, 1.0), -1.0))
+    ang_mid = (ang_rim + ang_top)/2.0
+    x_mid = R*math.sin(ang_mid)
+    z_mid = cz + R*math.cos(ang_mid)
+    p_mid_up = App.Vector(x_mid, 0, z_mid)
+    cz2 = -h + R
+    z_mid2 = cz2 - R*math.cos(ang_mid)
+    p_mid_dn = App.Vector(x_mid, 0, z_mid2)
+    arc_up = Part.Arc(p_rim, p_mid_up, p_top).toShape()
+    arc_dn = Part.Arc(p_top, p_mid_dn, p_rim).toShape()
+    w = Part.Wire([arc_up, arc_dn])
+    try:
+        if not w.isClosed():
+            pts = [v.Point for v in w.Vertexes]
+            pts_proj = project_points_to_plane(pts, App.Vector(0,0,0), App.Vector(0,1,0))
+            pts_proj = unique_points(pts_proj)
+            if len(pts_proj) < 3:
+                raise ValueError("Perfil Huygens degenerado tras proyección (len=%d)" % len(pts_proj))
+            w = make_closed_wire(pts_proj)
+        f = safe_make_face_from_wire(w)
+        return revolve_face(f, App.Vector(0,0,0), App.Vector(0,0,1), 360)
+    except Exception as e:
+        App.Console.PrintError("Fallo al construir Huygens (perfil degenerado). Se crea placeholder esférico: %s\n" % e)
+        return Part.makeSphere(a*0.5)
+
+def place_shape(shape, base, rot_degrees=(0,0,0)):
+    rx, ry, rz = rot_degrees
+    placement = App.Placement()
+    placement.Base = App.Vector(*base)
+    rot = App.Rotation(App.Vector(0,0,1), rz).multiply(
+          App.Rotation(App.Vector(0,1,0), ry)).multiply(
+          App.Rotation(App.Vector(1,0,0), rx))
+    placement.Rotation = rot
+    moved = shape.copy()
+    moved.Placement = placement
+    return moved
+
+# -----------------------
+# Nuevos componentes espaciales (blindajes, paneles y robótica avanzados)
+# -----------------------
+def build_shield(radius, thickness, height):
+    outer = Part.makeCylinder(radius, height)
+    inner_r = max(radius - thickness, 0.001)
+    inner = Part.makeCylinder(inner_r, height)
+    try:
+        return outer.cut(inner)
+    except Exception:
+        return outer
+
+def build_panel(width, height, thick=0.02):
+    try:
+        return Part.makeBox(width, thick, height)
+    except Exception:
+        return Part.makeCylinder(max(width*0.5, 0.001), thick)
+
+# Robot arm avanzado (3 segmentos + joints esféricos)
+def build_robotic_arm(seg_len=ARM_SEG_LEN, seg_r=ARM_SEG_R, joint_r=ARM_JOINT_R):
+    try:
+        base = Part.makeCylinder(seg_r*1.6, seg_r*0.5)
+        # segmento 1
+        seg1 = Part.makeCylinder(seg_r, seg_len)
+        seg1 = seg1.translate(App.Vector(0,0,seg_r*0.5))
+        joint1 = Part.makeSphere(joint_r).translate(App.Vector(0,0,seg_len+seg_r*0.5))
+        # segmento 2
+        seg2 = Part.makeCylinder(seg_r*0.9, seg_len*0.85)
+        seg2 = seg2.translate(App.Vector(0,0,seg_len+seg_r*0.5))
+        joint2 = Part.makeSphere(joint_r*0.9).translate(App.Vector(0,0,seg_len*1.85+seg_r*0.5))
+        # segmento 3 (muñón + pinza)
+        seg3 = Part.makeCylinder(seg_r*0.8, seg_len*0.65)
+        seg3 = seg3.translate(App.Vector(0,0,seg_len*1.85+seg_r*0.5))
+        claw = Part.makeBox(seg_r*1.4, seg_r*0.4, seg_r*0.6).translate(App.Vector(-seg_r*0.7, -seg_r*0.2, seg_len*2.3))
+        arm = base.fuse(seg1).fuse(joint1).fuse(seg2).fuse(joint2).fuse(seg3).fuse(claw)
+        return arm
+    except Exception:
+        return Part.makeCylinder(seg_r*1.6, seg_r*0.5)
+
+# -----------------------
+# NUEVO: Propulsor cúbico tipo CubeSat (módulo motor) (mejorado)
+# -----------------------
+def build_cubesat_thruster(size, wall, noz_diam, noz_len):
+    L = float(size)
+    outer = Part.makeBox(L, L, L)
+    inner_size = max(L-2*wall, 0.001)
+    inner = Part.makeBox(inner_size, inner_size, inner_size).translate(App.Vector(wall, wall, wall))
+    try:
+        body = outer.cut(inner)
+    except Exception:
+        body = outer
+    # Tubo de tobera: hacemos cilindro centrado en cara inferior (-Z)
+    r = max(noz_diam/2.0, 0.005)
+    tube = Part.makeCylinder(r, noz_len, App.Vector(L/2.0, L/2.0, -noz_len), App.Vector(0,0,-1))
+    # Campana de tobera (cono cónico divergente)
+    cone = Part.makeCone(r*0.8, r*1.5, noz_len, App.Vector(L/2.0, L/2.0, -noz_len*1.5), App.Vector(0,0,-1))
+    # Brida de acople en cara trasera
+    flange = Part.makeCylinder(r*1.15, wall*1.5, App.Vector(L/2.0, L/2.0, -wall*0.75), App.Vector(0,0,1))
+    try:
+        thruster = body.fuse(tube).fuse(cone).fuse(flange)
+    except Exception:
+        thruster = body
+    return thruster
+
+# -----------------------
+# NUEVO: Motor VASIMR mejorado (geométrico) con gimbal parameter
+# -----------------------
+def build_vasimr(core_r, core_l, shroud_r, shroud_l, nozzle_l, coil_R, coil_r, coils_n,
+                 gimbal_pitch=0.0, gimbal_yaw=0.0):
+    # Construye VASIMR en su sistema local (eje +Z), luego lo rotaremos con gimbal en place_shape.
+    parts = []
+    # Tubo de plasma
+    core = Part.makeCylinder(core_r, core_l, App.Vector(-core_l, 0, 0), App.Vector(1,0,0))
+    parts.append(core)
+    # Bobinas (tori) alrededor del eje
+    if coils_n < 1:
+        coils_n = 1
+    dz = core_l / (coils_n + 1)
+    for i in range(coils_n):
+        x = -core_l + (i+1)*dz
+        try:
+            coil = Part.makeTorus(coil_R, coil_r, App.Vector(x, 0, 0), App.Vector(1,0,0))
+            parts.append(coil)
+        except Exception:
+            pass
+    # Carena exterior
+    try:
+        shroud_outer = Part.makeCylinder(shroud_r, shroud_l, App.Vector(-shroud_l, -shroud_r, 0), App.Vector(1,0,0))
+        shroud_inner = Part.makeCylinder(max(shroud_r - 0.03, 0.001), shroud_l, App.Vector(-shroud_l, -shroud_r, 0), App.Vector(1,0,0))
+        shroud = shroud_outer.cut(shroud_inner)
+        parts.append(shroud)
+    except Exception:
+        pass
+    # Campana magnética (cono divergente)
+    try:
+        nozzle = Part.makeCone(core_r*1.15, shroud_r*1.6, nozzle_l, App.Vector(-shroud_l-nozzle_l, -shroud_r, 0), App.Vector(1,0,0))
+        parts.append(nozzle)
+    except Exception:
+        pass
+    # Unir
+    base = parts[0]
+    for p in parts[1:]:
+        try:
+            base = base.fuse(p)
+        except Exception:
+            pass
+    # Aplicar gimbal: retornamos la pieza sin rotar; la rotación se hace en place_shape usando rot_degrees
+    return base
+
+# -----------------------
+# Ensamblaje unificado (Cassini + Huygens + propulsión + robótica mejorada)
+# -----------------------
+def build_cassini_huygens(scale=1.0):
+    s = scale
+    parts = []
+
+    # HGA
+    hga = build_hga_dish(HGA_DIAM*s, HGA_DEPTH*s, HGA_THK*s, HGA_HUB_R*s)
+    parts.append(("HGA", hga))
+
+    # Bus
+    bus = build_bus_hex(BUS_HEIGHT*s, BUS_FLAT2FLAT*s)
+    bus_placed = place_shape(bus, base=(0,0, -(BUS_TOP_TO_HGA+BUS_HEIGHT)*s), rot_degrees=(0,0,0))
+    parts.append(("BUS", bus_placed))
+
+    # Backbone estructural (barra central)
+    backbone = Part.makeBox(0.06*s, 0.06*s, BUS_HEIGHT*0.9*s).translate(App.Vector(-0.03*s, -0.03*s, -(BUS_TOP_TO_HGA+BUS_HEIGHT*0.05)*s))
+    parts.append(("BACKBONE", backbone))
+
+    # Mástil
+    mast = Part.makeCylinder(0.10*s, BUS_TOP_TO_HGA*s, App.Vector(0,0,-BUS_TOP_TO_HGA*s))
+    parts.append(("MAST", mast))
+
+    # RTGs/booms (dos lados) - como antes
+    rtg = build_rtg(RTG_RADIUS*s, RTG_LENGTH*s)
+    boom = build_cyl_tube(RTG_BOOM_R*s, RTG_BOOM_LEN*s, axis='X')
+    bus_top_z = -(BUS_TOP_TO_HGA)*s
+    y_off = (BUS_FLAT2FLAT*0.6)*s
+    boom1 = place_shape(boom, base=(0, y_off, bus_top_z + BUS_HEIGHT*0.5*s), rot_degrees=(0,0,0))
+    rtg1  = place_shape(rtg,  base=(RTG_BOOM_LEN*s, y_off, bus_top_z + BUS_HEIGHT*0.5*s), rot_degrees=(0,0,0))
+    boom2 = place_shape(boom, base=(0, -y_off, bus_top_z + BUS_HEIGHT*0.2*s), rot_degrees=(0,180,0))
+    rtg2  = place_shape(rtg,  base=(RTG_BOOM_LEN*s, -y_off, bus_top_z + BUS_HEIGHT*0.2*s), rot_degrees=(0,180,0))
+    parts += [("BOOM1", boom1), ("RTG1", rtg1), ("BOOM2", boom2), ("RTG2", rtg2)]
+
+    # LGA
+    lga = build_lga(LGA_DIAM*s, LGA_DEPTH*s, LGA_THK*s)
+    lga1 = place_shape(lga, base=(0.7*s, 0.0, -(BUS_TOP_TO_HGA + BUS_HEIGHT*0.6)*s), rot_degrees=(90,0,90))
+    lga2 = place_shape(lga, base=(-0.7*s, 0.0, -(BUS_TOP_TO_HGA + BUS_HEIGHT*0.6)*s), rot_degrees=(90,0,-90))
+    parts += [("LGA1", lga1), ("LGA2", lga2)]
+
+    # Magnetometer boom
+    mag_boom = build_cyl_tube(MAG_BOOM_R*s, MAG_BOOM_LEN*s, axis='Y')
+    mag_boom = place_shape(mag_boom, base=(0.0, (BUS_FLAT2FLAT*0.5 + 0.1)*s, -(BUS_TOP_TO_HGA + BUS_HEIGHT*0.2)*s), rot_degrees=(0,0,0))
+    parts.append(("MAG_BOOM", mag_boom))
+
+    # Huygens
+    huy = build_huygens(HUY_DIAM*s, HUY_THK_CENTER*s)
+    huy_placed = place_shape(huy, base=(-(BUS_FLAT2FLAT*0.65 + HUY_OFFSET_FROM_BUS)*s, 0, -(BUS_TOP_TO_HGA + BUS_HEIGHT*0.35)*s), rot_degrees=(0,90,0))
+    parts.append(("HUYGENS", huy_placed))
+
+    # Blindaje radial
+    shield = build_shield(BUS_FLAT2FLAT*0.7*s, RADIATION_SHIELD_THK*s, BUS_HEIGHT*1.2*s)
+    shield = place_shape(shield, base=(0,0,-(BUS_TOP_TO_HGA+BUS_HEIGHT)*s*1.05))
+    parts.append(("RADIATION_SHIELD", shield))
+
+    # Paneles desplegables (2 laterales, con actuador)
+    if ENABLE_DEPLOY_PANELS:
+        for side in (1, -1):
+            # panel body
+            panel = build_panel(PANEL_W*s, PANEL_H*s, thick=PANEL_THK*s)
+            # hinge cylinder at bus edge
+            hinge = Part.makeCylinder(PANEL_HINGE_R*s, PANEL_THK*s*2)
+            # actuator (pistón) simple
+            actuator = Part.makeCylinder(PANEL_THK*s*0.6, PANEL_ACTUATOR_L*s)
+            # place hinge on side of bus
+            px = side * (BUS_FLAT2FLAT*0.5 + 0.0)*s
+            hinge_pos = (px, 0, -BUS_HEIGHT*0.3*s)
+            panel_pos = (px + side*(PANEL_W*s*0.5 + 0.01*s), 0, -BUS_HEIGHT*0.3*s)
+            act_pos = (px + side*(0.02*s), PANEL_H*s*0.25, -BUS_HEIGHT*0.25*s)
+            h_obj = place_shape(hinge, base=hinge_pos)
+            p_obj = place_shape(panel, base=panel_pos)
+            a_obj = place_shape(actuator, base=act_pos)
+            parts += [("PANEL_HINGE_%d" % side, h_obj), ("PANEL_%d" % side, p_obj), ("PANEL_ACT_%d" % side, a_obj)]
+
+    # -----------------------
+    # NUEVO: Propulsor cúbico (módulo motor) acoplado a popa (opcional)
+    # -----------------------
+    if ENABLE_CUBETHR:
+        cube_thr = build_cubesat_thruster(CUBE_THR_SIZE*s, CUBE_THR_WALL*s, CUBE_THR_NOZZLE_D*s, CUBE_THR_NOZZLE_L*s)
+        cube_thr_pos_z = -(AFT_OFFSET_Z*s + CUBE_THR_SIZE*0.5*s)
+        cube_thr = place_shape(cube_thr, base=(0, 0, cube_thr_pos_z), rot_degrees=(0,0,0))
+        parts.append(("CUBESAT_THRUSTER", cube_thr))
+
+    # -----------------------
+    # NUEVO: Dos propulsores VASIMR en pilones laterales (opcional)
+    # -----------------------
+    if ENABLE_VASIMR:
+        vasimr_base = build_vasimr(VASIMR_CORE_R*s, VASIMR_CORE_L*s, VASIMR_SHROUD_R*s, VASIMR_SHROUD_L*s,
+                                   VASIMR_NOZZLE_L*s, VASIMR_COIL_R*s, VASIMR_COIL_r*s, VASIMR_COILS_N,
+                                   gimbal_pitch=0.0, gimbal_yaw=0.0)
+        # Creación de pilones rígidos con bridas de sujeción
+        pylon_len = VASIMR_PYLON_L*s
+        pylon_r   = VASIMR_PYLON_R*s
+        pylon_L = build_cyl_tube(pylon_r, pylon_len, axis='Y')
+        pylon_R = build_cyl_tube(pylon_r, pylon_len, axis='Y')
+        pyl_z = -(AFT_OFFSET_Z*s)
+        pyl_y = (BUS_FLAT2FLAT*0.7*s)
+        pylon_L = place_shape(pylon_L, base=(0,  pyl_y - pylon_len, pyl_z))
+        pylon_R = place_shape(pylon_R, base=(0, -pyl_y,             pyl_z))
+        parts += [("VASIMR_PYLON_L", pylon_L), ("VASIMR_PYLON_R", pylon_R)]
+        # Gimbaled placement: rot_degrees = (pitch, yaw, roll) in degrees via place_shape
+        # left engine: positive Y
+        vasimr_L = place_shape(vasimr_base, base=(0,  pyl_y, pyl_z), rot_degrees=( -VASIMR_GIMBAL_PITCH, VASIMR_GIMBAL_YAW, 0))
+        vasimr_R = place_shape(vasimr_base, base=(0, -pyl_y, pyl_z), rot_degrees=(  VASIMR_GIMBAL_PITCH,-VASIMR_GIMBAL_YAW, 0))
+        parts += [("VASIMR_L", vasimr_L), ("VASIMR_R", vasimr_R)]
+
+    # -----------------------
+    # Brazo robótico articulado (opcional)
+    # -----------------------
+    if ENABLE_ROBOT_ARM:
+        arm = build_robotic_arm(seg_len=ARM_SEG_LEN*s, seg_r=ARM_SEG_R*s, joint_r=ARM_JOINT_R*s)
+        # montar brazo en lateral superior del BUS
+        arm_pos = (BUS_FLAT2FLAT*0.45*s, 0, -BUS_TOP_TO_HGA*0.2*s)
+        arm_obj = place_shape(arm, base=arm_pos, rot_degrees=(0,0,90))
+        parts.append(("ROBOTIC_ARM", arm_obj))
+        # punto de anclaje estructural para la base de brazo
+        anchor = Part.makeCylinder(ARM_JOINT_R*s*0.8, 0.06*s).translate(App.Vector(arm_pos[0]-0.01*s, arm_pos[1], arm_pos[2]-0.03*s))
+        parts.append(("ARM_ANCHOR", anchor))
+
+    # Compound final
+    solids = [p for _, p in parts]
+    try:
+        asm = Part.Compound(solids)
+    except Exception as e:
+        App.Console.PrintError("No se pudo crear Compound global: %s\n" % e)
+        asm = None
+    return parts, asm
+
+# -----------------------
+# Crear en documento y UI-safe view fit (igual que antes)
+# -----------------------
+def add_obj(shape, name="Part"):
+    doc = App.ActiveDocument
+    if doc is None:
+        doc = ensure_doc()
+    try:
+        obj = doc.addObject("Part::Feature", name)
+        obj.Shape = shape
+        return obj
+    except Exception as e:
+        App.Console.PrintError("Fallo al añadir objeto %s: %s\n" % (name, e))
+        return None
+
+def set_color(obj, rgb=(0.8,0.8,0.8), alpha=0.0):
+    if not HAS_GUI or obj is None:
+        return
+    try:
+        obj.ViewObject.ShapeColor = rgb
+        if alpha > 0:
+            obj.ViewObject.Transparency = int(min(max(alpha*100,0), 90))
+    except Exception:
+        pass
+
+def ensure_doc(name="Cassini_Huygens"):
+    if App.ActiveDocument is None or App.ActiveDocument.Name != name:
+        for d in list(App.listDocuments().keys()):
+            if d == name:
+                try:
+                    App.closeDocument(d)
+                except Exception:
+                    pass
+        App.newDocument(name)
+    return App.ActiveDocument
+
+def main():
+    doc = ensure_doc("Cassini_Huygens")
+    doc.Label = "Cassini_Huygens"
+    parts, asm = build_cassini_huygens(SCALE)
+    objects = []
+    if DEBUG_SEPARATE:
+        # colores por tipo (sólo si GUI activo)
+        color_map = {
+            "HGA": (1.0, 1.0, 1.0),
+            "BUS": (0.85,0.85,0.85),
+            "RTG": (0.95,0.85,0.6),
+            "RADIATION_SHIELD": (0.4,0.4,0.45),
+            "CUBESAT_THRUSTER": (0.55,0.55,0.6),
+            "VASIMR": (0.45,0.6,0.7),
+            "ROBOTIC_ARM": (0.6,0.6,0.7),
+            "PANEL": (0.1,0.1,0.2),
+            "BACKBONE": (0.3,0.3,0.3)
+        }
+        for name, shp in parts:
+            obj = add_obj(shp, name)
+            if obj:
+                # elegir color por prefijo
+                col = None
+                for k,v in color_map.items():
+                    if k in name:
+                        col = v
+                        break
+                if col is None:
+                    col = (0.85,0.85,0.85)
+                set_color(obj, rgb=col)
+                objects.append(obj)
+    if asm is not None:
+        obj_main = add_obj(asm, "Cassini_Huygens_Assembly")
+        if obj_main:
+            set_color(obj_main, rgb=(0.9,0.9,0.9))
+            objects.append(obj_main)
+    doc.recompute()
+    if HAS_GUI:
+        try:
+            Gui.sendMsgToActiveView("ViewFit")
+        except Exception:
+            try:
+                av = Gui.ActiveDocument.ActiveView
+                if hasattr(av, "fitAll"):
+                    av.fitAll()
+            except Exception:
+                pass
+    App.Console.PrintMessage("Macro finalizado. Revisa la consola para avisos/errores.\n")
+    return objects
+
+if __name__ == "__main__":
+    main()

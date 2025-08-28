@@ -1,0 +1,407 @@
+# -*- coding: utf-8 -*-
+# FreeCAD macro: CubeSat 1U con propulsión iónica (geometrías principales)
+# Autor: Víctor + Copilot
+# Requisitos: FreeCAD 0.19+ (Part, Draft)
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part, Draft
+import math
+
+DOC_NAME = "CubeSat1U_IonThruster"
+if App.ActiveDocument:
+    if App.ActiveDocument.Name != DOC_NAME:
+        App.newDocument(DOC_NAME)
+else:
+    App.newDocument(DOC_NAME)
+doc = App.ActiveDocument
+doc.Label = DOC_NAME
+
+# -------------------------
+# Parámetros globales (mm)
+# -------------------------
+# Envolvente 1U
+Lx, Ly, Lz = 100.0, 100.0, 113.5
+t_wall = 2.0
+innerLx, innerLy, innerLz = 96.0, 96.0, 109.5
+halfZ = Lz/2.0  # 56.75
+
+# Keep-out rails (planos visuales)
+rail_keepout_w = 1.5  # ancho de zona a marcar (face plana, sin espesor)
+
+# Apertura frontal +Z
+open_diam = 46.0
+cs_diam = 48.0
+cs_depth = 1.0  # avellanado
+
+# Thruster housing
+thr_Lx, thr_Ly, thr_Lz = 70.0, 70.0, 35.0
+thr_front_z = 50.0  # cara frontal del thruster a +50 mm
+thr_center_z = thr_front_z - thr_Lz/2.0  # 32.5
+thr_bolt_pitch = 62.0
+m25_clear = 2.7  # taladro slip-fit M2.5
+
+# Rejillas y distanciadores
+grid_d = 40.0
+grid_t = 1.2
+spacer_ext = 42.0
+spacer_int = 38.0
+spacer_t = 0.8
+bolt_circle = 34.0
+n_bolts = 3
+
+# Cámara de ionización
+ion_d = 32.0
+ion_t = 18.0
+
+# Cátodo
+cat_d = 12.0
+cat_t = 28.0
+cat_offset_r = 14.0
+cat_tilt_deg = 10.0
+
+# Propulente (elige uno): use_iodine True => yodo; False => xenón
+use_iodine = True
+
+# Cápsula de yodo
+iod_Lx, iod_Ly, iod_Lz = 70.0, 70.0, 15.0
+vapor_channel_d = 6.0
+vapor_channel_L = 25.0
+
+# Botella de xenón
+xe_d = 60.0
+xe_L = 80.0
+xe_neck_d = 8.0
+xe_neck_L = 12.0
+xe_wall = 1.5
+
+# PCBs y patrones
+ppu_Lx, ppu_Ly, ppu_Lz = 80.0, 80.0, 12.0
+ppu_z_top, ppu_z_bot = -10.0, -22.0  # espesor 12
+ppu_pitch = 74.0
+
+eps_Lx, eps_Ly, eps_Lz = 80.0, 70.0, 10.0
+eps_z_top, eps_z_bot = -35.0, -45.0
+eps_pitch_x, eps_pitch_y = 64.0, 54.0
+
+obc_Lx, obc_Ly, obc_Lz = 80.0, 80.0, 8.0
+obc_z_top, obc_z_bot = -55.0, -63.0
+obc_pitch = 74.0
+
+# Montantes en L (bastidor interno)
+leg_len = Lz
+leg_a = 8.0
+leg_t = 2.0
+
+# Guías de cable en montantes
+cable_ch_w = 4.0
+cable_ch_d = 4.0
+
+# Arandelas PEEK (aisladores)
+washer_t = 0.5
+washer_id = m25_clear
+washer_od = 5.5
+
+# Utilidades
+def make_box_centered(name, sx, sy, sz, cx=0, cy=0, cz=0):
+    shape = Part.makeBox(sx, sy, sz, App.Vector(cx - sx/2.0, cy - sy/2.0, cz - sz/2.0))
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    return obj
+
+def make_cyl(name, r, h, axis='Z', cx=0, cy=0, cz=0):
+    cyl = Part.makeCylinder(r, h)
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = cyl
+    # Centro longitudinal en cz, orientado según axis
+    if axis == 'Z':
+        base = App.Vector(cx - 0.0, cy - 0.0, cz - h/2.0)
+        rot = App.Rotation(App.Vector(0,0,1), 0)
+    elif axis == 'X':
+        base = App.Vector(cx - h/2.0, cy, cz)
+        rot = App.Rotation(App.Vector(0,1,0), 90)
+    elif axis == 'Y':
+        base = App.Vector(cx, cy - h/2.0, cz)
+        rot = App.Rotation(App.Vector(1,0,0), 90)
+    obj.Placement = App.Placement(base, rot)
+    return obj
+
+def boolean_cut(name, a, b):
+    cut = doc.addObject("Part::Cut", name)
+    cut.Base = a
+    cut.Tool = b
+    return cut
+
+def boolean_fuse(name, a, b):
+    fuse = doc.addObject("Part::Fuse", name)
+    fuse.Base = a
+    fuse.Tool = b
+    return fuse
+
+def drill_pattern(parent_obj, pitch_x, pitch_y, z_through=True, hole_d=m25_clear, z_min=None, z_max=None):
+    """Taladra 4 agujeros en patrón rectangular centrado ±pitch/2 en X/Y, eje Z."""
+    r = hole_d/2.0
+    holes = []
+    for sx in (-0.5, 0.5):
+        for sy in (-0.5, 0.5):
+            x = sx * pitch_x
+            y = sy * pitch_y
+            if z_through:
+                # cilindro largo para garantizar corte
+                h = Lz*2
+                cz = 0.0
+            else:
+                h = (z_max - z_min)
+                cz = (z_max + z_min)/2.0
+            hole = make_cyl("Hole_{:.1f}_{:.1f}".format(x,y), r, h, axis='Z', cx=x, cy=y, cz=cz)
+            holes.append(hole)
+    # Unir agujeros y cortar
+    fuse = holes[0]
+    for h in holes[1:]:
+        fuse = boolean_fuse("HolesFuse", fuse, h)
+    cut = boolean_cut(parent_obj.Name + "_drilled", parent_obj, fuse)
+    return cut, holes, fuse
+
+def ring(name, od, idd, t, cx=0, cy=0, cz=0, axis='Z'):
+    ro = od/2.0
+    ri = idd/2.0
+    outer = Part.makeCylinder(ro, t)
+    inner = Part.makeCylinder(ri, t)
+    body = outer.cut(inner)
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = body
+    # center at cz and orient
+    if axis == 'Z':
+        base = App.Vector(cx, cy, cz - t/2.0)
+        rot = App.Rotation(App.Vector(0,0,1), 0)
+    elif axis == 'X':
+        base = App.Vector(cx - t/2.0, cy, cz)
+        rot = App.Rotation(App.Vector(0,1,0), 90)
+    elif axis == 'Y':
+        base = App.Vector(cx, cy - t/2.0, cz)
+        rot = App.Rotation(App.Vector(1,0,0), 90)
+    obj.Placement = App.Placement(base, rot)
+    return obj
+
+def three_bolt_holes(parent, circle_d, hole_d=m25_clear, z_through=True, z_min=None, z_max=None):
+    r = circle_d/2.0
+    angles = [0, 120, 240]
+    holes = []
+    for a in angles:
+        rad = math.radians(a)
+        x = r*math.cos(rad)
+        y = r*math.sin(rad)
+        if z_through:
+            h = Lz*2
+            cz = 0.0
+        else:
+            h = (z_max - z_min)
+            cz = (z_max + z_min)/2.0
+        hole = make_cyl("BoltHole_{:d}".format(a), hole_d/2.0, h, axis='Z', cx=x, cy=y, cz=cz)
+        holes.append(hole)
+    fuse = holes[0]
+    for h in holes[1:]:
+        fuse = boolean_fuse("ThreeHolesFuse", fuse, h)
+    cut = boolean_cut(parent.Name + "_3bolts", parent, fuse)
+    return cut, holes, fuse
+
+# -------------------------
+# 1) Envolvente 1U hueca
+# -------------------------
+outer = make_box_centered("Enclosure_Outer", Lx, Ly, Lz, 0, 0, 0)
+inner = make_box_centered("Enclosure_Inner", innerLx, innerLy, innerLz, 0, 0, 0)
+enclosure = boolean_cut("Enclosure", outer, inner)
+
+# Apertura frontal +Z (Ø46) y avellanado Ø48 x 1 mm
+hole_front = make_cyl("FrontHole", open_diam/2.0, 10.0, axis='Z', cx=0, cy=0, cz=halfZ-5.0)
+enclosure_hole = boolean_cut("Enclosure_WithHole", enclosure, hole_front)
+
+cs_recess = make_cyl("FrontCountersink", cs_diam/2.0, cs_depth, axis='Z', cx=0, cy=0, cz=halfZ - cs_depth/2.0)
+enclosure_final = boolean_cut("Enclosure_Final", enclosure_hole, cs_recess)
+
+# Planos keep-out de raíles (caras externas, sin espesor)
+# Posicionamos 4 planos de ancho 1.5 mm a lo largo de Z, en cada arista X/Y
+def make_keepout_plane(name, length, width, base_vec, rot):
+    pl = Draft.make_rectangle(width, length)
+    pl.Label = name
+    pl.Placement = App.Placement(base_vec, rot)
+    return pl
+
+# Aristas en X=±50, Y=±50 (justo al ras del cubo externo)
+# Plano orientado paralelo a Z (largo = Lz)
+rot_X = App.Rotation(App.Vector(1,0,0), 90)  # XY->YZ
+rot_Y = App.Rotation(App.Vector(0,1,0), 90)  # XY->XZ
+
+keepouts = []
+# En caras Y=+50 y Y=-50 (planos en XZ)
+for y in (Ly/2.0, -Ly/2.0):
+    base = App.Vector(-rail_keepout_w/2.0, -Lz/2.0, 0)
+    pl = make_keepout_plane("KeepOut_Y_{:.0f}".format(y), Lz, rail_keepout_w, App.Vector(0, y, 0), rot_X)
+    keepouts.append(pl)
+# En caras X=+50 y X=-50 (planos en YZ)
+for x in (Lx/2.0, -Lx/2.0):
+    pl = make_keepout_plane("KeepOut_X_{:.0f}".format(x), Lz, rail_keepout_w, App.Vector(x, 0, 0), rot_Y)
+    keepouts.append(pl)
+
+# -------------------------
+# 2) Bastidor interno (montantes en L)
+# -------------------------
+def make_L_upright(name, sign_x, sign_y):
+    # Colocado en las esquinas internas: ±48, ±48 (interior)
+    cx = sign_x*(innerLx/2.0)
+    cy = sign_y*(innerLy/2.0)
+    # Dos prismas que forman la L (alas 8x8x2)
+    leg1 = make_box_centered(name+"_legX", leg_a, leg_t, leg_len, cx - leg_a/2.0 + leg_t/2.0*sign_x, cy - leg_t/2.0*sign_y, 0)
+    leg2 = make_box_centered(name+"_legY", leg_t, leg_a, leg_len, cx - leg_t/2.0*sign_x, cy - leg_a/2.0 + leg_t/2.0*sign_y, 0)
+    fuse = boolean_fuse(name, leg1, leg2)
+    return fuse, (leg1, leg2)
+
+uprights = []
+for sx in (1, -1):
+    for sy in (1, -1):
+        up, parts = make_L_upright("Upright_{}{}".format('P' if sx>0 else 'N', 'P' if sy>0 else 'N'), sx, sy)
+        uprights.append(up)
+
+# Canales de cableado 4x4 mm a lo largo de los montantes (ranura axial)
+def add_cable_channel(upright_obj, sign_x, sign_y):
+    # ranura centrada en el alma de cada L, hacia el interior
+    cx = sign_x*(innerLx/2.0 - leg_a/2.0)
+    cy = sign_y*(innerLy/2.0 - leg_a/2.0)
+    ch = make_box_centered("CableCh_{}{}".format('P' if sign_x>0 else 'N','P' if sign_y>0 else 'N'),
+                           cable_ch_w, cable_ch_d, leg_len, cx, cy, 0)
+    cut = boolean_cut(upright_obj.Name+"_withCh", upright_obj, ch)
+    return cut
+
+uprights_cut = []
+i = 0
+for sx in (1, -1):
+    for sy in (1, -1):
+        cut = add_cable_channel(uprights[i], sx, sy)
+        uprights_cut.append(cut)
+        i += 1
+
+# -------------------------
+# 3) Conjunto de thruster
+# -------------------------
+thr_block = make_box_centered("Thruster_Block", thr_Lx, thr_Ly, thr_Lz, 0, 0, thr_center_z)
+thr_block_drilled, thr_block_holes, thr_block_fuse = drill_pattern(thr_block, thr_bolt_pitch, thr_bolt_pitch, True, m25_clear)
+
+# Arandelas PEEK en tornillos del thruster (sobre la cara frontal)
+washers = []
+for sx in (-0.5, 0.5):
+    for sy in (-0.5, 0.5):
+        x = sx*thr_bolt_pitch
+        y = sy*thr_bolt_pitch
+        wz = thr_front_z + washer_t/2.0  # fuera, justo en la tapa frontal
+        w = ring("Washer_{:.0f}_{:.0f}".format(x,y), washer_od, washer_id, washer_t, cx=x, cy=y, cz=wz, axis='Z')
+        washers.append(w)
+
+# Cámara de ionización (coaxial +Z), centrada dentro del thruster
+ion_cz = thr_center_z + thr_Lz*0.15  # ligeramente hacia la boca
+ion_chamber = make_cyl("IonChamber", ion_d/2.0, ion_t, axis='Z', cx=0, cy=0, cz=ion_cz)
+
+# Cátodo (cilindro Ø12x28, offset radial 14 mm, inclinación 10° hacia +Z)
+cat = Part.makeCylinder(cat_d/2.0, cat_t)
+cat_obj = doc.addObject("Part::Feature", "Cathode")
+cat_obj.Shape = cat
+# Posicionamiento
+cat_base = App.Vector(cat_offset_r, 0, ion_cz + ion_t/2.0)  # arranca junto a la cámara
+cat_rot = App.Rotation(App.Vector(0,1,0), cat_tilt_deg)  # inclinado 10° en plano XZ
+cat_obj.Placement = App.Placement(cat_base, cat_rot)
+
+# Rejillas: dos discos Ø40x1.2 separados por anillos Ø42/Ø38x0.8, y 3 pernos M2.5 a 120° (taladros)
+grid_z0 = thr_front_z - 1.0  # ligeramente hundidas tras la apertura
+grid1 = make_cyl("Grid_Screen", grid_d/2.0, grid_t, axis='Z', cx=0, cy=0, cz=grid_z0)
+sp1 = ring("Spacer_1", spacer_ext, spacer_int, spacer_t, cx=0, cy=0, cz=grid_z0 - (grid_t/2.0 + spacer_t/2.0), axis='Z')
+grid2 = make_cyl("Grid_Accel", grid_d/2.0, grid_t, axis='Z', cx=0, cy=0, cz=grid_z0 - (grid_t + spacer_t))
+# Taladros 3x en las rejillas (pasan a través de ambas)
+grid2_cut, grid_bolts, grid_fuse = three_bolt_holes(grid2, bolt_circle, m25_clear, True)
+
+# -------------------------
+# 4) Propulente: Yodo o Xenón
+# -------------------------
+if use_iodine:
+    iod_cz = thr_center_z - thr_Lz/2.0 - iod_Lz/2.0 + 5.0  # detrás del thruster
+    iod_capsule = make_box_centered("IodineCapsule", iod_Lx, iod_Ly, iod_Lz, 0, 0, iod_cz)
+    # Canal de vapor Ø6 x 25 hacia la cámara
+    # Origen en la cara superior de la cápsula apuntando a la cámara
+    ch_cz = iod_cz + iod_Lz/2.0 + vapor_channel_L/2.0
+    vapor_channel = make_cyl("VaporChannel", vapor_channel_d/2.0, vapor_channel_L, axis='Z', cx=0, cy=0, cz=ch_cz)
+else:
+    # Botella de xenón con pared 1.5 mm y cuello Ø8x12
+    xe_cz = -20.0
+    xe_outer = make_cyl("XeBottleOuter", xe_d/2.0, xe_L, axis='Z', cx=0, cy=0, cz=xe_cz)
+    xe_inner = make_cyl("XeBottleInner", xe_d/2.0 - xe_wall, xe_L - xe_neck_L, axis='Z', cx=0, cy=0, cz=xe_cz - xe_neck_L/2.0)
+    xe_shell = boolean_cut("XeBottle", xe_outer, xe_inner)
+    xe_neck = make_cyl("XeNeck", xe_neck_d/2.0, xe_neck_L, axis='Z', cx=0, cy=0, cz=xe_cz + xe_L/2.0 - xe_neck_L/2.0)
+
+# -------------------------
+# 5) PCBs y patrones de fijación
+# -------------------------
+def make_pcb(name, sx, sy, sz, z_top, z_bot, pitch_x, pitch_y=None):
+    cz = (z_top + z_bot)/2.0
+    pcb = make_box_centered(name, sx, sy, sz, 0, 0, cz)
+    if pitch_y is None:
+        pitch_y = pitch_x
+    drilled, holes, fuse = drill_pattern(pcb, pitch_x, pitch_y, True, m25_clear)
+    return drilled, holes, fuse
+
+ppu, ppu_holes, _ = make_pcb("PPU", ppu_Lx, ppu_Ly, ppu_Lz, ppu_z_top, ppu_z_bot, ppu_pitch)
+eps, eps_holes, _ = make_pcb("EPS", eps_Lx, eps_Ly, eps_Lz, eps_z_top, eps_z_bot, eps_pitch_x, eps_pitch_y)
+obc, obc_holes, _ = make_pcb("OBC", obc_Lx, obc_Ly, obc_Lz, obc_z_top, obc_z_bot, obc_pitch)
+
+# -------------------------
+# 6) Tapa frontal con ventana (ya incluida en Enclosure_Final), anclajes internos opcionales
+# -------------------------
+
+# Agrupar y ordenar
+grp = doc.addObject("App::DocumentObjectGroup", "CubeSat1U_Assembly")
+for o in [enclosure_final] + uprights_cut + keepouts + [thr_block_drilled, ion_chamber, cat_obj, grid1, sp1, grid2_cut]:
+    grp.addObject(o)
+
+for w in washers:
+    grp.addObject(w)
+
+for p in [ppu, eps, obc]:
+    grp.addObject(p)
+
+if use_iodine:
+    grp.addObject(iod_capsule)
+    grp.addObject(vapor_channel)
+else:
+    for o in [xe_shell, xe_neck]:
+        grp.addObject(o)
+
+# Estética opcional
+def colorize(obj, rgb):
+    try:
+        obj.ViewObject.ShapeColor = rgb
+    except:
+        pass
+
+colorize(enclosure_final, (0.75,0.75,0.78))
+for u in uprights_cut:
+    colorize(u, (0.6,0.6,0.65))
+colorize(thr_block_drilled, (0.35,0.35,0.4))
+colorize(ion_chamber, (0.2,0.5,0.8))
+colorize(cat_obj, (0.9,0.7,0.2))
+colorize(grid1, (0.85,0.85,0.85))
+colorize(sp1, (0.7,0.7,0.7))
+colorize(grid2_cut, (0.85,0.85,0.85))
+for w in washers:
+    colorize(w, (0.95,0.8,0.6))
+for p in [ppu, eps, obc]:
+    colorize(p, (0.3,0.6,0.3))
+for k in keepouts:
+    try:
+        k.ViewObject.DisplayMode = "Wireframe"
+        k.ViewObject.LineColor = (1.0,0.0,0.0)
+    except:
+        pass
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.fitAll()
+except:
+    pass
+
+print("Modelo 1U con thruster iónico generado. Centro en (0,0,0), +Z hacia la boca.")
