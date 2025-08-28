@@ -12,8 +12,8 @@ Operating Mode: During cruise, use electric propulsion (low power). When high Δ
 
 Propellant: Hydrogen stored at low density or in the form of compact hydrides to reduce volume.
 Compact fusion reactor (e.g., magnetic confinement or pulsed magneto-inertial): produces high-energy particles/energy.
-Thrust converter — magnetic nozzle: deflects and channels hot plasma without material contact. Prevents thermal erosion.
+Thrust converter/magnetic nozzle: deflects and channels hot plasma without material contact. Prevents thermal erosion.
 Energy management systems: superconductors for magnetic fields, storage (ultracapacitor batteries or flywheels) to manage power peaks.
-Radiation and shielding systems: fusion produces neutrons (depending on the reaction) -> shielding + sacrificial material; be careful with D-T.
+Radiation and shielding systems: fusion produces neutrons (depending on the reaction) shielding + sacrificial material; be careful with D-T.
 
 Electric propulsion (ion / Hall / MPD / VASIMR) for continuous low-power operation when fusion is not active.
