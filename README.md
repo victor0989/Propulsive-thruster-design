@@ -1,2 +1,2 @@
 # Propulsive-thruster-design
-Electric ion plasma with softer nuclear fusion. Possible idea or solution to the issue of propulsion in space or engines and thrusters. I thought of Magnetar hovering around dimensions or external dimensional fields of a large black hole.
+Electric ion plasma with softer nuclear fusion. Possible idea or solution to the issue of propulsion in space or engines and thrusters. I thought of Magnetar hovering around dimensions or external dimensional fields of a large black hole. Another solution because the plasma or neutron pulsar would act in a unique way with the black hole, but if it were the other way around, a white hole would act by repulsion and not extreme gravitational attraction.
