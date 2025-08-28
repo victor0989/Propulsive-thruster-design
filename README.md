@@ -1,6 +1,8 @@
 # Propulsive-thruster-design(FREECAD openSource Project)
 Electric ion plasma with softer nuclear fusion. Possible idea or solution to the issue of propulsion in space or engines and thrusters. I thought of Magnetar hovering around dimensions or external dimensional fields of a large black hole. Another solution because the plasma or neutron pulsar would act in a unique way with the black hole, but if it were the other way around, a white hole would act by repulsion and not extreme gravitational attraction.
 
+
+FreeCAD satellites integration,cubesats:https://www.freecad.org/
 Mode 1 (Soft Cruise): Low-power, high-specific-impulse electric propulsion (ion/Hall/MPD/VASIMR) for extended maneuvers and fuel efficiency. It uses light propellant (H, H₂, or Xe/Ar depending on the system) with small but highly efficient thrusts (high Δv possible).
 
 Mode 2 (Pulse Thrust): A controlled, pulsed fusion source that delivers bursts of high power when rapid acceleration is needed (escape from a gravity well, rapid insertion maneuver, transfer time reduction). This fusion would not be a "mini black hole" or anything exotic: it would be sustained or pulsed fusion (concepts like magnetic fusion, magnetized inertial confinement, pulsed fusion) coupled with a magnetic nozzle to convert energetic particles into directed thrust.
