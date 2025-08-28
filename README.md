@@ -12,6 +12,9 @@ Propeller Docking: Magnetic nozzle with superconducting coils (generate a field 
 Auxiliary Subsystems: Supercapacitor banks for surges, deployable radiators, modular shielding (lightweight materials enriched with hydrogen layers to moderate neutrons).
 Operating Mode: During cruise, use electric propulsion (low power). When high Δv is required, load banks and discharge into the pulsed fusion reactor -> commanded bursts of plasma through the nozzle.
 
+![Propulsion_system_design](Propulsor/images/DALLE/mappings/c38ea329-55d4-40b4-b53a-22b72aa1534d.png)
+
+
 Propellant: Hydrogen stored at low density or in the form of compact hydrides to reduce volume.
 Compact fusion reactor (e.g., magnetic confinement or pulsed magneto-inertial): produces high-energy particles/energy.
 Thrust converter/magnetic nozzle: deflects and channels hot plasma without material contact. Prevents thermal erosion.
