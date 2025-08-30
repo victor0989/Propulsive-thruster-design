@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 # FreeCAD macro: CubeSat_2U_with_MicroHallThruster
-# Autor: Víctor + Copilot
 # Unidad: mm
 
 import FreeCAD as App
