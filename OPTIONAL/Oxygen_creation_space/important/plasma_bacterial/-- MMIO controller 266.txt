@@ -1,0 +1,32 @@
+-- MMIO controller 266
+library ieee;
+use ieee.std_logic_1164.all;
+use iee.numeric_std.all;
+use work.chu_io_map.all;
+entity chu_mmio_controller is
+   port(
+     -- FPro bus
+     mmio_cs           : in std_logic;
+     mmio_wr           : in std_logic;
+     mmio_rd           : in std_logic;
+     mmio_addr         : in std_logic_vector(20 downto 0);
+     mmio_wr_data      : in std_logic_vector(31 downto 0);
+     -- slot interface
+     slot_cs_array       : out std_logic_vector(63 downto 0);
+     slot_mem_rd_array   : out std_logic_vector(63 downto 0);
+     slot_mem_wr_array   : out std_logic_vector(63 downto 0);
+     slot_reg_addr_array : out
+std_logic_vector(63 downto 0);
+slot_reg_addr_array      : in
+slot_2d_data_type;
+slot_wr_data_array       : out
+slot_2d_data_type
+);
+end chu_mmio_controller;
+
+
+-- 267 controller PMOD AXI
+-- controller data vector- registers
+-- controller for I2C transmiter? Receiver
+
+
