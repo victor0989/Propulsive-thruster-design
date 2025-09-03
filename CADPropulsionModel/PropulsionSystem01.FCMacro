@@ -1,0 +1,415 @@
+# -*- coding: utf-8 -*-
+# Spacecraft with Propulsion System - FreeCAD Macro
+# Ensamblado paramétrico con materiales, masas y hoja TechDraw (vistas ortográficas).
+# Probado con FreeCAD 0.20/0.21 (requiere GUI para TechDraw).
+
+import FreeCAD as App
+import Part
+import math
+
+# Intentar cargar TechDraw si hay GUI
+try:
+    import FreeCADGui as Gui
+    import TechDraw
+    HAS_GUI = True
+except Exception:
+    HAS_GUI = False
+
+# -------------------------
+# Parámetros de diseño (en METROS)
+# -------------------------
+p = {
+    # Envolvente general del plano
+    "L_total": 4.0,     # Longitud total
+    "W_stowed": 1.8,    # Ancho plegado (aprox. diámetro del cuerpo)
+    "W_deployed": 2.4,  # Ancho desplegado
+    "H_total": 2.0,     # Altura global de la envolvente (referencial)
+
+    # Cuerpo y capas
+    "t_struct": 0.020,  # Espesor estructura (composite)
+    "t_liner":  0.008,  # Espesor liner (superaleación)
+    "t_coat":   0.004,  # Espesor recubrimiento (cerámico)
+    # Diámetro base del cuerpo (desde el ancho plegado)
+    "D_body":   1.8,    # Asumimos sección circular para simplificar
+    # Canal interno (se deriva para garantizar espesor mínimo)
+    "D_core_min": 0.80, # Diámetro interno mínimo (conducto de plasma)
+
+    # Tobera (plasma thruster)
+    "L_thruster": 1.20, # Longitud de tobera
+    "D_exit":     1.00, # Diámetro de salida interno de la tobera
+
+    # Anillos de refuerzo
+    "ring_pitch":     0.25,  # Paso axial
+    "ring_ax_thick":  0.060, # Espesor axial del anillo
+    "ring_rad_thick": 0.030, # Espesor radial del anillo
+
+    # Soportes desplegables
+    "n_supports": 4,
+    "support_rod_d": 0.060,  # Diámetro de la varilla del soporte
+    "damp_tip_d":    0.100,  # Diámetro tope elastomérico
+    "damp_tip_t":    0.020,  # Espesor/altura tope
+    "sma_act_d":     0.035,  # Diámetro actuador SMA
+    "sma_act_L":     0.120,  # Carrera/longitud caracteristica
+
+    # Brida trasera
+    "flange_t":   0.050,  # Espesor
+    "flange_oversize": 0.050, # Radio adicional sobre el cuerpo
+    "bolt_circle_D": 1.20,    # Diámetro del círculo de taladros
+    "bolt_qty":   12,
+    "bolt_hole_D": 0.016,
+
+    # TechDraw
+    "td_scale": 1.0/23.0
+}
+
+# -------------------------
+# Materiales (densidad kg/m^3)
+# -------------------------
+materials = {
+    "Composite": {"name": "Carbon Fiber Composite", "density": 1600, "rgb": (0.10, 0.10, 0.12)},
+    "Superalloy": {"name": "Ni-based Superalloy", "density": 8250, "rgb": (0.70, 0.70, 0.72)},
+    "Ceramic": {"name": "Ceramic Coating", "density": 3200, "rgb": (0.92, 0.92, 0.95)},
+    "Elastomer": {"name": "Impact Dampening Elastomer", "density": 1100, "rgb": (0.10, 0.55, 0.15)},
+    "SMA": {"name": "Nitinol SMA", "density": 6450, "rgb": (0.80, 0.55, 0.35)},
+}
+
+# -------------------------
+# Utilidades
+# -------------------------
+def mm(x_m):  # metros -> mm
+    return float(x_m) * 1000.0
+
+def add_material_props(obj, mat_key):
+    mat = materials[mat_key]
+    if not obj.PropertiesList.__contains__("MaterialName"):
+        obj.addProperty("App::PropertyString", "MaterialName", "Physical", "Material name")
+    if not obj.PropertiesList.__contains__("Density_kg_m3"):
+        obj.addProperty("App::PropertyFloat", "Density_kg_m3", "Physical", "Density in kg/m^3")
+    obj.MaterialName = mat["name"]
+    obj.Density_kg_m3 = mat["density"]
+    if HAS_GUI and hasattr(obj, "ViewObject"):
+        obj.ViewObject.ShapeColor = mat["rgb"]
+
+def set_mass_properties(obj):
+    # Volumen en mm^3 -> m^3
+    vol_mm3 = obj.Shape.Volume
+    vol_m3 = vol_mm3 * 1e-9
+    rho = getattr(obj, "Density_kg_m3", 0.0)
+    mass = vol_m3 * rho
+    if not obj.PropertiesList.__contains__("Volume_m3"):
+        obj.addProperty("App::PropertyFloat", "Volume_m3", "Physical", "Volume in m^3")
+    if not obj.PropertiesList.__contains__("Mass_kg"):
+        obj.addProperty("App::PropertyFloat", "Mass_kg", "Physical", "Mass in kg")
+    obj.Volume_m3 = vol_m3
+    obj.Mass_kg = mass
+
+def fuse_list(shapes):
+    if not shapes:
+        return None
+    solid = shapes[0]
+    for s in shapes[1:]:
+        solid = solid.fuse(s)
+    return solid
+
+def cut(a, b):
+    return a.cut(b)
+
+# -------------------------
+# Documento y ensamblaje
+# -------------------------
+doc = App.newDocument("SPACECRAFT_PROPULSION_SYSTEM")
+asm = doc.addObject("App::Part", "Assembly")
+asm.Label = "SPACECRAFT WITH PROPULSION SYSTEM"
+
+# -------------------------
+# Derivación de medidas internas
+# -------------------------
+R_body = p["D_body"] * 0.5
+# Espesores totales hacia dentro
+t_total_in = p["t_struct"] + p["t_liner"] + p["t_coat"]
+R_core = max(0.5 * p["D_body"] - t_total_in, 0.5 * p["D_core_min"])
+
+# Radios por capa
+R_struct_outer = R_body
+R_struct_inner = R_struct_outer - p["t_struct"]
+R_liner_outer  = R_struct_inner
+R_liner_inner  = R_liner_outer - p["t_liner"]
+R_coat_outer   = R_liner_inner
+R_coat_inner   = R_coat_outer - p["t_coat"]
+
+# Garantizar garganta/cono interno mínimo
+if R_coat_inner < 0.5 * p["D_core_min"]:
+    R_coat_inner = 0.5 * p["D_core_min"]
+
+# Distribución de longitudes: cilindro recto + tobera + brida
+L_cyl = max(0.0, p["L_total"] - p["L_thruster"] - p["flange_t"])
+
+from FreeCAD import Vector, Placement, Rotation
+
+# -------------------------
+# Helpers de creación
+# -------------------------
+def make_hollow_cyl(r_outer, r_inner, h, name):
+    outer = Part.makeCylinder(mm(r_outer), mm(h))
+    inner = Part.makeCylinder(mm(r_inner), mm(h))
+    solid = outer.cut(inner)
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = solid
+    return obj
+
+def make_conical_shell(r1_o, r2_o, r1_i, r2_i, h, name):
+    cone_o = Part.makeCone(mm(r1_o), mm(r2_o), mm(h))
+    cone_i = Part.makeCone(mm(r1_i), mm(r2_i), mm(h))
+    shell = cone_o.cut(cone_i)
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shell
+    return obj
+
+def place(obj, x=0, y=0, z=0, rx=0, ry=0, rz=0):
+    obj.Placement = Placement(Vector(mm(x), mm(y), mm(z)),
+                              Rotation(rx, ry, rz))
+
+def add_to_asm(obj):
+    asm.addObject(obj)
+
+# -------------------------
+# Cuerpo: estructura + liner + recubrimiento
+# -------------------------
+body_struct = make_hollow_cyl(R_struct_outer, R_struct_inner, L_cyl, "Body_Structure")
+add_material_props(body_struct, "Composite")
+place(body_struct, 0, 0, 0, 0, 0, 0)
+add_to_asm(body_struct)
+
+body_liner = make_hollow_cyl(R_liner_outer, R_liner_inner, L_cyl, "Body_Liner")
+add_material_props(body_liner, "Superalloy")
+place(body_liner, 0, 0, 0, 0, 0, 0)
+add_to_asm(body_liner)
+
+body_coat = make_hollow_cyl(R_coat_outer, R_coat_inner, L_cyl, "Body_Coating")
+add_material_props(body_coat, "Ceramic")
+place(body_coat, 0, 0, 0, 0, 0, 0)
+add_to_asm(body_coat)
+
+# -------------------------
+# Tobera (plasma thruster): liner y recubrimiento cónicos
+# Base en z = L_cyl
+# -------------------------
+r1_i = R_coat_inner                   # radio interno en inicio del cono
+r2_i = 0.5 * p["D_exit"]              # radio interno en salida
+r1_o = r1_i + p["t_liner"] + p["t_coat"]
+r2_o = r2_i + p["t_liner"] + p["t_coat"]
+
+# Liner cónico (superaleación)
+thr_liner = make_conical_shell(r1_o - p["t_coat"], r2_o - p["t_coat"], r1_i, r2_i, p["L_thruster"], "Thruster_Liner")
+add_material_props(thr_liner, "Superalloy")
+place(thr_liner, 0, 0, L_cyl, 0, 0, 0)
+add_to_asm(thr_liner)
+
+# Recubrimiento interno (cerámico)
+thr_coat = make_conical_shell(r1_o, r2_o, r1_o - p["t_coat"], r2_o - p["t_coat"], p["L_thruster"], "Thruster_Coating")
+add_material_props(thr_coat, "Ceramic")
+place(thr_coat, 0, 0, L_cyl, 0, 0, 0)
+add_to_asm(thr_coat)
+
+# -------------------------
+# Brida trasera con taladros
+# -------------------------
+r_flange_o = R_body + p["flange_oversize"]
+r_flange_i = R_struct_inner  # continuidad con estructura
+flange = make_hollow_cyl(r_flange_o, r_flange_i, p["flange_t"], "Rear_Flange")
+add_material_props(flange, "Superalloy")
+place(flange, 0, 0, L_cyl + p["L_thruster"], 0, 0, 0)
+
+# Taladros en círculo de pernos
+holes = []
+z_hole = L_cyl + p["L_thruster"] + 0.5 * p["flange_t"]
+r_bolt = 0.5 * p["bolt_circle_D"]
+for i in range(p["bolt_qty"]):
+    ang = 2.0 * math.pi * i / p["bolt_qty"]
+    x = r_bolt * math.cos(ang)
+    y = r_bolt * math.sin(ang)
+    h_cyl = p["flange_t"] + 0.05
+    cyl = Part.makeCylinder(mm(0.5 * p["bolt_hole_D"]), mm(h_cyl))
+    cyl.translate(Vector(mm(x), mm(y), mm(z_hole - 0.5 * h_cyl)))
+    holes.append(cyl)
+
+if holes:
+    holes_comp = holes[0]
+    for h in holes[1:]:
+        holes_comp = holes_comp.fuse(h)
+    flange.Shape = flange.Shape.cut(holes_comp)
+
+add_to_asm(flange)
+
+# -------------------------
+# Anillos de refuerzo (collares cilíndricos)
+# -------------------------
+rings_grp = doc.addObject("App::Part", "Reinforcement_Rings")
+asm.addObject(rings_grp)
+
+ring_objs = []
+z_start = 0.10
+z_end = max(0.0, L_cyl - 0.10 - p["ring_ax_thick"])
+if p["ring_pitch"] > 0 and z_start < z_end:
+    z = z_start
+    while z <= z_end + 1e-9:
+        r_o = R_body
+        r_i = max(0.0, R_body - p["ring_rad_thick"])
+        ring = make_hollow_cyl(r_o, r_i, p["ring_ax_thick"], f"Ring_{len(ring_objs)+1:02d}")
+        add_material_props(ring, "Superalloy")
+        place(ring, 0, 0, z, 0, 0, 0)
+        rings_grp.addObject(ring)
+        ring_objs.append(ring)
+        z += p["ring_pitch"]
+
+# -------------------------
+# Soportes desplegables con tope elastomérico y actuador SMA
+# -------------------------
+supports_grp = doc.addObject("App::Part", "Deployable_Supports")
+asm.addObject(supports_grp)
+
+support_objs = []
+sma_objs = []
+tip_objs = []
+
+# Longitud efectiva para alcanzar W_deployed
+L_arm = max(0.10, (0.5 * p["W_deployed"]) - R_body - p["damp_tip_t"])
+z_mid = 0.5 * L_cyl
+
+for i in range(p["n_supports"]):
+    theta = 2.0 * math.pi * i / p["n_supports"]
+    # Varilla principal
+    rod = Part.makeCylinder(mm(0.5 * p["support_rod_d"]), mm(L_arm))
+    # Orientar: eje del cilindro por defecto en +Z -> rotarlo a +X y girar por theta
+    rod_obj = doc.addObject("Part::Feature", f"SupportRod_{i+1}")
+    rod_obj.Shape = rod
+    add_material_props(rod_obj, "Composite")
+    # Rotación: 90° en -Y para llevar Z->X, luego giro Z por theta
+    rot = Rotation(Vector(0,1,0), -90).multiply(Rotation(Vector(0,0,1), math.degrees(theta)))
+    # Base en la superficie del cuerpo
+    base = Vector(mm(R_body * math.cos(theta)),
+                  mm(R_body * math.sin(theta)),
+                  mm(z_mid))
+    rod_obj.Placement = Placement(base, rot)
+    supports_grp.addObject(rod_obj)
+    support_objs.append(rod_obj)
+
+    # Tope elastomérico en punta
+    tip = Part.makeCylinder(mm(0.5 * p["damp_tip_d"]), mm(p["damp_tip_t"]))
+    tip_obj = doc.addObject("Part::Feature", f"DampTip_{i+1}")
+    tip_obj.Shape = tip
+    add_material_props(tip_obj, "Elastomer")
+    # Colocar al final de la varilla (R_body + L_arm)
+    tip_base = Vector(mm((R_body + L_arm) * math.cos(theta)),
+                      mm((R_body + L_arm) * math.sin(theta)),
+                      mm(z_mid))
+    tip_rot = Rotation(Vector(0,1,0), -90).multiply(Rotation(Vector(0,0,1), math.degrees(theta)))
+    tip_obj.Placement = Placement(tip_base, tip_rot)
+    supports_grp.addObject(tip_obj)
+    tip_objs.append(tip_obj)
+
+    # Actuador SMA paralelo a la varilla, ligeramente desplazado
+    sma = Part.makeCylinder(mm(0.5 * p["sma_act_d"]), mm(L_arm - 0.1 * L_arm))
+    sma_obj = doc.addObject("Part::Feature", f"SMA_{i+1}")
+    sma_obj.Shape = sma
+    add_material_props(sma_obj, "SMA")
+        # Offset tangencial pequeño (8% del diámetro de la varilla)
+    off = 0.08 * p["support_rod_d"]
+
+    sma_obj = doc.addObject("Part::Feature", f"SMA_{i+1}")
+    sma_obj.Shape = sma
+    add_material_props(sma_obj, "SMA")
+
+    # Base del SMA: desplazada tangencialmente 'off' y 0.02 m hacia dentro (radial)
+    ux = math.cos(theta)
+    uy = math.sin(theta)
+    # Vector tangencial unitario (giro +90° en el plano)
+    tx = -uy
+    ty = ux
+
+    r_anchor = max(0.0, R_body - 0.02)  # anclaje ligeramente embebido
+    sma_base = Vector(mm(r_anchor * ux + off * tx),
+                      mm(r_anchor * uy + off * ty),
+                      mm(z_mid))
+
+    sma_rot = Rotation(Vector(0,1,0), -90).multiply(Rotation(Vector(0,0,1), math.degrees(theta)))
+    sma_obj.Placement = Placement(sma_base, sma_rot)
+
+    supports_grp.addObject(sma_obj)
+    sma_objs.append(sma_obj)
+
+# -------------------------
+# Calcular propiedades de masa/volumen
+# -------------------------
+calc_objs = [body_struct, body_liner, body_coat, thr_liner, thr_coat, flange] + ring_objs + support_objs + tip_objs + sma_objs
+for o in calc_objs:
+    try:
+        set_mass_properties(o)
+    except Exception:
+        pass
+
+total_mass = sum(getattr(o, "Mass_kg", 0.0) for o in calc_objs)
+
+# -------------------------
+# Crear compuesto del ensamblaje para vistas
+# -------------------------
+try:
+    compound_shape = Part.makeCompound([o.Shape for o in calc_objs if hasattr(o, "Shape")])
+    asm_shape = doc.addObject("Part::Feature", "Assembly_Compound")
+    asm_shape.Shape = compound_shape
+    asm.addObject(asm_shape)
+except Exception:
+    asm_shape = None
+
+# -------------------------
+# Hoja TechDraw con vistas ortográficas (si hay GUI)
+# -------------------------
+if HAS_GUI:
+    try:
+        page = doc.addObject("TechDraw::DrawPage", "TD_Page")
+        # Plantilla (opcional): si no hay, TechDraw crea página vacía
+        try:
+            tmpl = doc.addObject("TechDraw::DrawSVGTemplate", "TD_Template")
+            # Intenta usar una plantilla estándar si está disponible
+            # Algunas instalaciones exponen plantillas por rutas; si falla, se deja sin template
+            tmpl.Template = ""  # puedes asignar una ruta a un SVG de plantilla aquí
+            page.Template = tmpl
+        except Exception:
+            pass
+
+        # Vista de grupo proyectado
+        if asm_shape is None:
+            # Usa el cuerpo estructural como fallback
+            source_obj = body_struct
+        else:
+            source_obj = asm_shape
+
+        proj = doc.addObject("TechDraw::DrawProjGroup", "TD_Views")
+        proj.Source = source_obj
+        proj.ScaleType = "Custom"
+        proj.Scale = p["td_scale"]  # 1:23
+        proj.Direction = (0, 0, 1)  # Frontal por defecto
+        proj.addProjection("Front")
+        proj.addProjection("Top")
+        proj.addProjection("Right")
+        page.addView(proj)
+    except Exception:
+        pass
+
+# -------------------------
+# Acabados y reporte en consola
+# -------------------------
+doc.recompute()
+
+print("=== SPACECRAFT WITH PROPULSION SYSTEM ===")
+print(f"Longitud total (m): {p['L_total']}")
+print(f"Diámetro cuerpo (m): {p['D_body']}")
+print(f"Ancho plegado (m): {p['W_stowed']}  | Ancho desplegado (m): {p['W_deployed']}")
+print(f"Altura envolvente (m): {p['H_total']}")
+print(f"Objetos calculados: {len(calc_objs)}")
+print(f"Masa total aprox (kg): {total_mass:0.2f}")
+for o in calc_objs:
+    try:
+        print(f" - {o.Label}: V={getattr(o,'Volume_m3',0.0):.6f} m^3  m={getattr(o,'Mass_kg',0.0):.2f} kg  [{getattr(o,'MaterialName','')}]")
+    except Exception:
+        pass
