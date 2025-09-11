@@ -1,0 +1,180 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Destiny Propulsion - Variante “Heavy Armor”
+# Autor: Víctor + Copilot/GPT (variante)
+# Objetivo: variante más masiva, fuselaje robusto, reactor prominente, blindaje FEM reforzado,
+#          alerones más agresivos, propulsores secundarios reforzados, cabina integrada.
+# Unidades: mm, eje longitudinal = X
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+doc_name = "Destiny_Propulsion_HeavyArmor"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# ========================
+# Parámetros base
+# ========================
+P = {
+    # Fuselaje más robusto
+    "nose_len": 650.0,
+    "nose_base_d": 800.0,
+    "nose_cap_d": 600.0,
+    "mid_len": 1400.0,
+    "mid_d": 1200.0,
+    "rear_len": 1300.0,
+    "rear_d": 1600.0,
+    "hull_t": 30.0,
+
+    # Cabina integrada
+    "cockpit_w": 950.0,
+    "cockpit_h": 500.0,
+    "cockpit_l": 750.0,
+    "cockpit_x0": 550.0,
+    "cockpit_blend_r": 80.0,
+
+    # Reactor largo
+    "reactor_d": 1200.0,
+    "reactor_l": 2000.0,
+    "reactor_cx": 3000.0,
+    "nozzle_throat_d": 450.0,
+    "nozzle_exit_d": 1700.0,
+    "nozzle_l": 1700.0,
+    "nozzle_cx": 3700.0,
+    "nozzle_fillet_r": 100.0,
+
+    # Trusses reforzados
+    "truss_n": 8,
+    "truss_tube_w": 160.0,
+    "truss_R_attach": 800.0,
+    "truss_len": 1000.0,
+    "truss_rib_n": 10,
+    "truss_rib_th": 10.0,
+
+    # Alerones cortos, agresivos
+    "wing_root_w": 800.0,
+    "wing_tip_w": 200.0,
+    "wing_chord": 450.0,
+    "wing_thickness": 40.0,
+    "wing_sweep_deg": 22.0,
+
+    # Propulsores secundarios
+    "side_thruster_d": 500.0,
+    "side_thruster_l": 1000.0,
+    "side_thruster_x": 2500.0,
+    "side_thruster_y": 1300.0,
+    "side_thruster_z": -100.0,
+
+    # Blindaje estilo Solar Parker FEM
+    "shield_outer_t": 150.0,
+    "shield_gap": 30.0,
+    "shield_inner_t": 100.0,
+    "shield_extend": 500.0,
+}
+
+# ========================
+# Funciones utilitarias (cylinder, tube, cone, box)
+# ========================
+def rot_to_x(): return App.Rotation(App.Vector(0,1,0), 90)
+def add_obj(shape,label): obj=doc.addObject("Part::Feature",label); obj.Shape=shape; return obj
+def make_cyl_x(d,L,cx=0,cy=0,cz=0,label="CylX"):
+    c=Part.makeCylinder(d/2.0,L); c.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x()); return add_obj(c,label)
+def make_tube_x(d_o,d_i,L,cx=0,cy=0,cz=0,label="TubeX"):
+    o=Part.makeCylinder(d_o/2.0,L); i=Part.makeCylinder(d_i/2.0,L+0.2); t=o.cut(i); t.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x()); return add_obj(t,label)
+def make_conical_segment_x(d1,d2,L,cx=0,cy=0,cz=0,label="ConeX"):
+    c=Part.makeCone(d1/2.0,d2/2.0,L); c.Placement=App.Placement(App.Vector(cx-L/2.0,cy,cz),rot_to_x()); return add_obj(c,label)
+def make_box(w,d,h,cx=0,cy=0,cz=0,label="Box"):
+    b=Part.makeBox(w,d,h); b.Placement=App.Placement(App.Vector(cx-w/2.0,cy-d/2.0,cz-h/2.0),App.Rotation()); return add_obj(b,label)
+
+# ========================
+# 1) Fuselaje volumétrico blunt
+# ========================
+nose_cap=Part.makeSphere(P["nose_cap_d"]/2.0); nose_cap.Placement=App.Placement(App.Vector(P["nose_cap_d"]/2.0,0,0),App.Rotation())
+nose_trans=Part.makeCone(P["nose_base_d"]/2.0,P["nose_cap_d"]/2.0,P["nose_len"]-P["nose_cap_d"]/2.0)
+nose_trans.Placement=App.Placement(App.Vector(P["nose_len"]/2.0,0,0),rot_to_x())
+mid=Part.makeCylinder(P["mid_d"]/2.0,P["mid_len"]); mid.Placement=App.Placement(App.Vector(P["nose_len"],0,0),rot_to_x())
+rear=Part.makeCylinder(P["rear_d"]/2.0,P["rear_len"]); rear.Placement=App.Placement(App.Vector(P["nose_len"]+P["mid_len"],0,0),rot_to_x())
+fuse_fuselage=nose_cap.fuse(nose_trans).fuse(mid).fuse(rear)
+try: hull_inner=fuse_fuselage.makeOffsetShape(-P["hull_t"],0.01,join=2,fill=True); hull_shell=fuse_fuselage.cut(hull_inner); hull=add_obj(hull_shell,"Hull_Shell_HeavyArmor")
+except: hull=add_obj(fuse_fuselage,"Hull_Shell_HeavyArmor_Fallback")
+
+# ========================
+# 2) Cabina integrada
+# ========================
+cockpit_box=Part.makeBox(P["cockpit_l"],P["cockpit_w"],P["cockpit_h"])
+cockpit_box.Placement=App.Placement(App.Vector(P["cockpit_x0"],-P["cockpit_w"]/2.0,-P["cockpit_h"]/2.0),App.Rotation())
+blend_sphere=Part.makeSphere(P["cockpit_blend_r"]); blend_sphere.Placement=App.Placement(App.Vector(P["cockpit_x0"]-P["cockpit_blend_r"]/2.0,0,0),App.Rotation())
+cockpit_vol=cockpit_box.fuse(blend_sphere)
+try: ck_inner=cockpit_vol.makeOffsetShape(-12.0,0.01,join=2,fill=True); cockpit_shell=cockpit_vol.cut(ck_inner); cockpit_obj=add_obj(cockpit_shell,"Cockpit_Integrated")
+except: cockpit_obj=add_obj(cockpit_vol,"Cockpit_Integrated_Fallback")
+try: hull_cut=hull.Shape.cut(cockpit_vol); hull_obj_cut=add_obj(hull_cut,"Hull_With_Cockpit_Cut")
+except: hull_obj_cut=hull
+
+# ========================
+# 3) Reactor y boquilla
+# ========================
+reactor_core=Part.makeCylinder(P["reactor_d"]/2.0,P["reactor_l"]); reactor_core.Placement=App.Placement(App.Vector(P["reactor_cx"]-P["reactor_l"]/2.0,0,0),rot_to_x())
+reactor_obj=add_obj(reactor_core,"Reactor_Core")
+nozzle=Part.makeCone(P["nozzle_throat_d"]/2.0,P["nozzle_exit_d"]/2.0,P["nozzle_l"]); nozzle.Placement=App.Placement(App.Vector(P["nozzle_cx"]-P["nozzle_l"]/2.0,0,0),rot_to_x())
+nozzle_obj=add_obj(nozzle,"Nozzle_Extended")
+
+# ========================
+# 4) Trusses reforzados
+# ========================
+truss_parts=[]
+for k in range(P["truss_n"]):
+    ang=k*(360.0/P["truss_n"])
+    y=P["truss_R_attach"]*math.cos(math.radians(ang))
+    z=P["truss_R_attach"]*math.sin(math.radians(ang))
+    beam=Part.makeBox(P["truss_len"],P["truss_tube_w"],P["truss_tube_w"]); beam.Placement=App.Placement(App.Vector(P["reactor_cx"]-P["truss_len"]/2.0,y-P["truss_tube_w"]/2.0,z-P["truss_tube_w"]/2.0),App.Rotation())
+    truss_parts.append(beam)
+truss_shape=truss_parts[0]
+for t in truss_parts[1:]: truss_shape=truss_shape.fuse(t)
+truss_obj=add_obj(truss_shape,"Truss_HeavyArmor")
+
+# ========================
+# 5) Alerones cortos y angulares
+# ========================
+def make_angular_wing(x0,side=1,label="Wing"):
+    root=P["wing_root_w"]; tip=P["wing_tip_w"]; chord=P["wing_chord"]; sweep=P["wing_sweep_deg"]
+    x_le=x0; x_te=x0+chord; z=0
+    p1=App.Vector(x_le,0,z+root/2.0); p2=App.Vector(x_te,0,z+tip/2.0); p3=App.Vector(x_te,0,z-tip/2.0); p4=App.Vector(x_le,0,z-root/2.0)
+    wire=Part.makePolygon([p1,p2,p3,p4,p1]); face=Part.Face(wire)
+    wing_solid=face.extrude(App.Vector(0,side*(root-tip),0))
+    wing_solid.Placement=App.Placement(App.Vector(0,0,0),App.Rotation(App.Vector(1,0,0),-sweep if side>0 else sweep))
+    return add_obj(wing_solid,label)
+wing_r=make_angular_wing(P["nose_len"]+750,side=1,label="Wing_Right_Angular")
+wing_l=make_angular_wing(P["nose_len"]+750,side=-1,label="Wing_Left_Angular")
+
+# ========================
+# 6) Propulsores secundarios
+# ========================
+thr_r=make_tube_x(P["side_thruster_d"]+40,P["side_thruster_d"]-50,P["side_thruster_l"],cx=P["side_thruster_x"],cy=P["side_thruster_y"],cz=P["side_thruster_z"],label="SideThruster_Right")
+thr_l=make_tube_x(P["side_thruster_d"]+40,P["side_thruster_d"]-50,P["side_thruster_l"],cx=P["side_thruster_x"],cy=-P["side_thruster_y"],cz=P["side_thruster_z"],label="SideThruster_Left")
+
+# ========================
+# 7) Blindaje FEM estilo Solar Parker Probe
+# ========================
+inner_r=P["reactor_d"]/2+P["shield_gap"]; outer_r=inner_r+P["shield_inner_t"]; len_mod=P["reactor_l"]+P["shield_extend"]
+shield_inner=Part.makeCylinder(inner_r,len_mod); shield_outer=Part.makeCylinder(outer_r,len_mod)
+shield_tube=shield_outer.cut(shield_inner); shield_tube.Placement=App.Placement(App.Vector(P["reactor_cx"]-len_mod/2.0,0,0),rot_to_x())
+shield_obj=add_obj(shield_tube,"Shield_Internal")
+
+# ========================
+# 8) Montaje final
+# ========================
+grp=doc.addObject("App::Part","Destiny_HeavyArmor_Ship")
+parts=[hull_obj_cut,cockpit_obj,reactor_obj,nozzle_obj,truss_obj,wing_r,wing_l,thr_r,thr_l,shield_obj]
+for o in parts:
+    try: grp.addObject(o)
+    except: pass
+
+# Recomputation y vistas
+doc.recompute()
+try: Gui.ActiveDocument.ActiveView.viewAxonometric(); Gui.SendMsgToActiveView("ViewFit")
+except: pass
+
+print("Macro 'Destiny Heavy Armor' lista en '{}'.".format(doc.Label))
