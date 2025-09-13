@@ -1,0 +1,106 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Destiny-Style Spaceship Fully Fused (Hull + Hex Reactor + Aerospike)
+# Autor: Víctor + ChatGPT
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+doc_name = "Destiny_Ship_Fused"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# =====================
+# Parámetros principales
+# =====================
+P = {
+    # Fuselaje
+    "nose_len": 800.0,
+    "nose_base_d": 600.0,
+    "mid_len": 1400.0,
+    "mid_d": 900.0,
+    "rear_len": 1200.0,
+    "rear_d": 1200.0,
+
+    # Reactor Hexagonal
+    "reactor_base_r": 400.0,
+    "reactor_l": 900.0,
+    "reactor_layers": 6,
+
+    # Aerospike
+    "aero_throat_d": 300.0,
+    "aero_exit_d": 900.0,
+    "aero_l": 700.0,
+}
+
+# =====================
+# Utilidades
+# =====================
+X_AXIS = App.Vector(1,0,0)
+Y_AXIS = App.Vector(0,1,0)
+Z_AXIS = App.Vector(0,0,1)
+
+def rot_to_x(): return App.Rotation(Y_AXIS, 90)
+
+def make_cyl_x(d, L, cx=0.0):
+    cyl = Part.makeCylinder(d/2.0, L)
+    cyl.Placement = App.Placement(App.Vector(cx - L/2.0, 0, 0), rot_to_x())
+    return cyl
+
+def make_cone_x(d1, d2, L, cx=0.0):
+    cone = Part.makeCone(d1/2.0, d2/2.0, L)
+    cone.Placement = App.Placement(App.Vector(cx - L/2.0, 0, 0), rot_to_x())
+    return cone
+
+def make_hex_prism(base_r, height, layers=1, cx=0.0):
+    shapes = []
+    for l in range(layers):
+        s = base_r * (1 - 0.05*l)
+        pts = [App.Vector(cx, s*math.cos(math.pi/3*i), s*math.sin(math.pi/3*i)) for i in range(6)]
+        pts.append(pts[0])
+        wire = Part.makePolygon(pts)
+        face = Part.Face(wire)
+        solid = face.extrude(App.Vector(height/layers,0,0))
+        solid.Placement = App.Placement(App.Vector(cx - height/2.0 + l*(height/layers), 0, 0), App.Rotation())
+        shapes.append(solid)
+    hex_shape = shapes[0]
+    for sh in shapes[1:]:
+        hex_shape = hex_shape.fuse(sh)
+    return hex_shape
+
+# =====================
+# 1) Fuselaje
+# =====================
+nose = make_cone_x(P["nose_base_d"], 0.0, P["nose_len"], cx=P["nose_len"]/2.0)
+mid  = make_cyl_x(P["mid_d"], P["mid_len"], cx=P["nose_len"] + P["mid_len"]/2.0)
+rear = make_cyl_x(P["rear_d"], P["rear_len"], cx=P["nose_len"] + P["mid_len"] + P["rear_len"]/2.0)
+hull = nose.fuse(mid).fuse(rear)
+
+# =====================
+# 2) Reactor Hexagonal + Aerospike (fusion total en cola)
+# =====================
+reactor_cx = P["nose_len"] + P["mid_len"] + P["rear_len"]/2.0  # centrado en cola
+reactor = make_hex_prism(P["reactor_base_r"], P["reactor_l"], layers=P["reactor_layers"], cx=reactor_cx)
+
+# Aerospike fusionado al final del reactor
+aero_cx = reactor_cx + P["reactor_l"]/2.0 + P["aero_l"]/2.0
+aero = make_cone_x(P["aero_throat_d"], P["aero_exit_d"], P["aero_l"], cx=aero_cx)
+
+reactor_aero_fused = reactor.fuse(aero)
+
+# =====================
+# 3) Ensamblaje final hull + reactor-aerospike
+# =====================
+ship = hull.fuse(reactor_aero_fused)
+ship_obj = doc.addObject("Part::Feature", "Destiny_Ship_Full")
+ship_obj.Shape = ship
+
+doc.recompute()
+try:
+    Gui.ActiveDocument.ActiveView.viewAxonometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except: pass
+
+print("Macro completada: Nave Destiny ultra realista con reactor hexagonal + Aerospike fusionado en la cola.")

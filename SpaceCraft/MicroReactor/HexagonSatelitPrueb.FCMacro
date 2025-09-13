@@ -1,0 +1,519 @@
+import FreeCAD as App, Part, math
+
+doc = App.newDocument("HexSat_Fixed")
+
+# -------------------- Parámetros --------------------
+P = {
+    'core_flat': 1.60,
+    'core_h':    2.40,
+    'core_wall': 0.060,
+
+    'outer_flat': 2.40,
+    'outer_h':    0.80,
+    'outer_wall': 0.060,
+
+    'collar_h':   0.10,
+    'collar_t':   0.015,
+
+    'hatch_w':    0.80,
+    'hatch_h':    0.50,
+    'hatch_t':    0.012,
+    'hinge_r':    0.020,
+
+    'dish_R':     0.75,
+    'dish_depth': 0.16,
+    'dish_t':     0.005,
+    'mast_R':     0.035,
+    'mast_L':     0.80,
+    'strut_R':    0.015,
+    'strut_L':    0.70,
+
+    'payload_flat': 0.90,
+    'payload_h':    1.20,
+    'payload_wall': 0.030,
+
+    'boss_R':     0.028,
+    'boss_H':     0.020,
+
+    'add_solar':  False,
+    'panel_L':    1.80,
+    'panel_W':    0.80,
+    'panel_T':    0.020,
+     'mount_ring_w': 0.10,   # ancho radial del anillo de interfaz
+    'mount_ring_t': 0.04,   # espesor (altura) del anillo
+    'mount_bolts': 12,      # número de tornillos o clamps
+
+    'patch_w': 0.35,        # parche antena: ancho
+    'patch_h': 0.25,        # parche antena: alto
+    'patch_t': 0.01,        # parche antena: espesor
+
+    'cubesat_L': 0.30,      # largo CubeSat
+    'cubesat_W': 0.20,      # ancho CubeSat
+    'cubesat_H': 0.12,      # alto CubeSat
+    'cubesat_wall': 0.006,  # pared CubeSat
+    'cubesat_offset': 0.15, # separación del core
+
+    'coldplate_W': 0.6,
+    'coldplate_H': 0.4,
+    'coldplate_T': 0.015,
+    'heatpipe_R': 0.008,
+
+    'radiator_W': 1.1,
+    'radiator_H': 0.7,
+    'radiator_T': 0.02
+})
+
+# -------------------- Utilidades básicas --------------------
+def add_part(shape, name, color=(0.8,0.8,0.85), base=None, rot=None):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    try: obj.ViewObject.ShapeColor = color
+    except: pass
+    if base: obj.Placement.Base = base
+    if rot:  obj.Placement.Rotation = rot
+    return obj
+
+def hex_wire(flat, z=0.0, rot_deg=0.0):
+    R = flat / math.sqrt(3)
+    ang0 = math.radians(rot_deg)
+    pts = [App.Vector(R*math.cos(ang0 + k*math.pi/3), R*math.sin(ang0 + k*math.pi/3), z) for k in range(6)]
+    return Part.makePolygon(pts + [pts[0]])
+
+def hex_face(flat, z=0.0, rot_deg=0.0):
+    return Part.Face(hex_wire(flat, z, rot_deg))
+
+def prism_hex(flat, h, rot_deg=0.0):
+    return hex_face(flat, 0.0, rot_deg).extrude(App.Vector(0,0,h))
+
+def ring_hex(flat_outer, wall, h, rot_deg=0.0):
+    outer = prism_hex(flat_outer, h, rot_deg)
+    inner = prism_hex(flat_outer - 2*wall, h - 2*wall, rot_deg)
+    inner.translate(App.Vector(0,0,wall))
+    return outer.cut(inner)
+
+def hollow_hex(flat, h, wall, rot_deg=0.0):
+    outer = prism_hex(flat, h, rot_deg)
+    inner = prism_hex(flat - 2*wall, h - 2*wall, rot_deg)
+    inner.translate(App.Vector(0,0,wall))
+    return outer.cut(inner)
+
+def cylinder_between(p1, p2, r, name="Strut", color=(0.85,0.85,0.9)):
+    v = p2.sub(p1)
+    h = v.Length
+    if h < 1e-9:
+        return None
+    cyl = Part.makeCylinder(r, h)
+    obj = add_part(cyl, name, color)
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), v)
+    obj.Placement.Base = p1
+    return obj
+
+# -------------------- Sólidos principales --------------------
+def make_core(P):
+    core = hollow_hex(P['core_flat'], P['core_h'], P['core_wall'])
+    return add_part(core, "Core_Hex", (0.78,0.80,0.84))
+
+def make_outer_hex_frame(P, z0):
+    frame = ring_hex(P['outer_flat'], P['outer_wall'], P['outer_h'])
+    return add_part(frame, "OuterHex_Frame", (0.72,0.76,0.80), base=App.Vector(0,0,z0))
+
+def make_flat_cap(flat, t, z, name):
+    cap = prism_hex(flat, t)
+    return add_part(cap, name, (0.76,0.78,0.82), base=App.Vector(0,0,z))
+
+def add_collar_around(flat, z, h, t, name):
+    outer_wire = Part.Wire(hex_wire(flat))
+    outer_wire.Placement = App.Placement(App.Vector(0,0,z), App.Rotation())
+    outer_face = Part.Face(outer_wire)
+    outer_solid = outer_face.extrude(App.Vector(0,0,h))
+
+    inner_wire = Part.Wire(hex_wire(flat - 2*t))
+    inner_wire.Placement = App.Placement(App.Vector(0,0,z), App.Rotation())
+    inner_face = Part.Face(inner_wire)
+    inner_solid = inner_face.extrude(App.Vector(0,0,h))
+
+    collar = outer_solid.cut(inner_solid)
+    return add_part(collar, name, (0.70,0.74,0.78))
+
+def cut_hatch_on_cap(cap_obj, P, center_z):
+    w, h, t = P['hatch_w'], P['hatch_h'], P['hatch_t']
+    yofs = (P['core_flat']/2.0) * 0.90
+    frame = Part.makeBox(w, t, h)
+    frame.translate(App.Vector(-w/2.0, yofs, center_z))
+    add_part(frame, "Hatch_Frame", (0.82,0.82,0.86))
+    cut = Part.makeBox(w-2*t, t+0.02, h-2*t)
+    cut.translate(App.Vector(-(w-2*t)/2.0, yofs, center_z + t))
+    cap_obj.Shape = cap_obj.Shape.cut(cut)
+    # Bisagra cilíndrica
+    hinge = Part.makeCylinder(P['hinge_r'], w)
+    hng = add_part(hinge, "Hinge", (0.75,0.75,0.8))
+    hng.Placement.Rotation = App.Rotation(App.Vector(0,1,0), 90)
+    hng.Placement.Base = App.Vector(-w/2.0, yofs - 0.01, center_z + t*1.5)
+
+# -------------------- Antena plato hex --------------------
+def make_dish(radius, depth, t):
+    R = (radius**2 + depth**2) / (2*depth)
+    sph_outer = Part.makeSphere(R)
+    sph_inner = Part.makeSphere(R - t)
+    big_box = Part.makeBox(4*R, 4*R, depth)
+    big_box.translate(App.Vector(-2*R, -2*R, R - depth))
+    cap_outer = sph_outer.common(big_box)
+    cap_inner = sph_inner.common(big_box)
+    return cap_outer.cut(cap_inner)
+
+def make_hex_dish(P, name="Hex_Dish"):
+    # plato esférico y recorte hexagonal para borde
+    dish = make_dish(P['dish_R'], P['dish_depth'], P['dish_t'])
+    hex_clip = prism_hex(P['dish_R']*2/math.sqrt(3), 2.0)
+    hex_clip.translate(App.Vector(0,0,-1.0))
+    dish_hex = dish.common(hex_clip)
+    return add_part(dish_hex, name, (0.70,0.76,0.85))
+
+def mount_hex_dish_with_mast(P, anchor_point, normal_dir, idx=1):
+    dish_obj = make_hex_dish(P, name=f"Hex_Dish_{idx}")
+    rot = App.Rotation(App.Vector(0,0,1), normal_dir)
+    dish_obj.Placement.Rotation = rot
+    dish_base = anchor_point.add(normal_dir.normalize().multiply(P['mast_L'] + 0.10))
+    dish_obj.Placement.Base = dish_base
+    cylinder_between(anchor_point, dish_base, P['mast_R'], name=f"Dish_Mast_{idx}", color=(0.78,0.78,0.82))
+    up = normal_dir.normalize()
+    ref = App.Vector(0,0,1) if abs(up.z) < 0.9 else App.Vector(1,0,0)
+    u = up.cross(ref).normalize()
+    v = up.cross(u).normalize()
+    rim_base = dish_base.add(up.multiply(-0.10))
+    for k, ang in enumerate([0, 120, 240], start=1):
+        a = math.radians(ang)
+        rim_pt = rim_base.add(u.multiply(math.cos(a)*0.25)).add(v.multiply(math.sin(a)*0.25))
+        cylinder_between(anchor_point, rim_pt, P['strut_R'], name=f"Dish_Strut_{idx}_{k}", color=(0.82,0.82,0.86))
+    return dish_obj
+
+# -------------------- Payload hex --------------------
+def make_payload_hex(P, z_attach, name="Payload_Hex"):
+    body = hollow_hex(P['payload_flat'], P['payload_h'], P['payload_wall'])
+    obj = add_part(body, name, (0.78,0.80,0.83), base=App.Vector(0,0,z_attach))
+    collar = ring_hex(P['payload_flat'] + 0.12, 0.06, P['collar_h'])
+    col = add_part(collar, f"{name}_Collar", (0.74,0.76,0.80), base=App.Vector(0,0,z_attach - P['collar_h']))
+    return obj, col
+
+def add_hex_perimeter_bosses(flat, z, R, H, count=12, name="Boss"):
+    objs = []
+    Rcirc = flat/math.sqrt(3)
+    for i in range(count):
+        ang = 2*math.pi*i/count
+        p = App.Vector(Rcirc*math.cos(ang), Rcirc*math.sin(ang), z)
+        boss = Part.makeCylinder(R, H)
+        o = add_part(boss, f"{name}_{i+1}", (0.85,0.85,0.88), base=p)
+        objs.append(o)
+    return objs
+
+def add_hex_shield(flat, h, capas, espesor_capa):
+    shield = prism_hex(flat + 2*capas*espesor_capa, h + 2*espesor_capa)
+    for i in range(1, capas+1):
+        inner = prism_hex(flat + 2*(capas-i)*espesor_capa, h)
+        shield = shield.cut(inner)
+    return add_part(shield, "Hex_Shield", (0.5,0.5,0.55))
+
+# Ejemplo: 3 capas de 2 cm alrededor del core
+add_hex_shield(P['core_flat'], P['core_h'], capas=3, espesor_capa=0.02)
+
+def add_thermal_blanket(flat, h, separacion=0.01, grosor=0.005, capas=5):
+    for i in range(capas):
+        offset = separacion + i*(grosor + separacion)
+        capa = prism_hex(flat + 2*offset, h + 2*offset)
+        add_part(capa, f"Thermal_Layer_{i+1}", (1.0, 0.9, 0.6))
+
+def add_whipple_shield(flat, h, separacion=0.15, espesor=0.01):
+    outer = prism_hex(flat + 2*separacion, h + 2*separacion)
+    inner = prism_hex(flat + 2*separacion - 2*espesor, h + 2*separacion - 2*espesor)
+    shield = outer.cut(inner)
+    return add_part(shield, "Whipple_Shield", (0.65, 0.65, 0.7))
+
+def add_hex_solar_panel(flat, w, t, azimuth_deg, z_center):
+    # Calcula posición del centro de la cara
+    R = flat / math.sqrt(3)
+    ang = math.radians(azimuth_deg)
+    center = App.Vector(R*math.cos(ang), R*math.sin(ang), z_center)
+    panel = Part.makeBox(w, t, w*0.8)
+    obj = add_part(panel, f"SolarPanel_{azimuth_deg}", (0.1,0.1,0.4), base=center)
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), azimuth_deg)
+
+def add_radiator_plate(w, h, t, pos, normal):
+    plate = Part.makeBox(w, t, h)
+    obj = add_part(plate, "Radiator", (0.8,0.8,0.9), base=pos)
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), normal)
+    return obj
+
+def add_small_antenna(pos, length=0.5, radius=0.01, tilt_deg=0):
+    ant = Part.makeCylinder(radius, length)
+    obj = add_part(ant, "Small_Antenna", (0.7,0.7,0.75), base=pos)
+    obj.Placement.Rotation = App.Rotation(App.Vector(1,0,0), tilt_deg)
+    return obj
+
+def add_radiation_shield(flat, h, capas=4, espesor=0.015):
+    colors = [(0.4,0.4,0.45), (0.6,0.6,0.65)]  # alternar colores
+    shield = None
+    for i in range(capas):
+        offset = i * espesor
+        layer = prism_hex(flat + 2*offset, h + 2*offset)
+        add_part(layer, f"Radiation_Layer_{i+1}", colors[i % 2])
+
+def add_internal_electronics_shield(flat, h, wall=0.05):
+    outer = prism_hex(flat - 0.1, h - 0.1)
+    inner = prism_hex(flat - 0.1 - 2*wall, h - 0.1 - 2*wall)
+    shield = outer.cut(inner)
+    return add_part(shield, "Internal_Electronics_Shield", (0.3,0.3,0.35))
+
+def add_neutron_panels(flat, h, espesor=0.02):
+    for az in [0, 60, 120, 180, 240, 300]:
+        R = flat / math.sqrt(3)
+        ang = math.radians(az)
+        center = App.Vector(R*math.cos(ang), R*math.sin(ang), h/2)
+        panel = Part.makeBox(espesor, 0.6, h*0.9)
+        obj = add_part(panel, f"Neutron_Panel_{az}", (0.9,0.9,0.5), base=center)
+        obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), az)
+
+def add_ablative_shield(flat, h, grosor=0.01):
+    outer = prism_hex(flat + 2*grosor, h + 2*grosor)
+    inner = prism_hex(flat, h)
+    ablative = outer.cut(inner)
+    return add_part(ablative, "Ablative_Shield", (0.5,0.3,0.2))
+
+def add_deflector_panel(width, height, thickness, offset):
+    panel = Part.makeBox(width, thickness, height)
+    return add_part(panel, "Charged_Particle_Deflector", (0.6,0.7,0.9), base=offset)
+    
+def add_interface_ring(flat, z_base, ring_w=0.10, ring_t=0.04, bolt_count=12, name="Interface_Ring"):
+    R = flat / math.sqrt(3)
+    outer = Part.makeCylinder(R + ring_w, ring_t)
+    inner = Part.makeCylinder(max(R - ring_w, 0.01), ring_t)
+    ring = outer.cut(inner)
+    obj = add_part(ring, name, (0.6,0.62,0.66), base=App.Vector(0,0,z_base - ring_t))
+
+    # Pernos/bosses de sujeción repartidos 360°
+    for i in range(bolt_count):
+        ang = 2*math.pi*i/bolt_count
+        r_b = R + ring_w*0.6
+        p = App.Vector(r_b*math.cos(ang), r_b*math.sin(ang), z_base - ring_t)
+        bolt = Part.makeCylinder(0.012, ring_t*1.1)
+        add_part(bolt, f"{name}_Bolt_{i+1}", (0.75,0.75,0.78), base=p)
+    return obj
+
+def add_separation_springs(flat, z_base, count=6, k_radius=0.02, length=0.05, name="Sep_Spring"):
+    R = flat / math.sqrt(3)
+    for i in range(count):
+        ang = 2*math.pi*i/count
+        r = R + 0.06
+        base = App.Vector(r*math.cos(ang), r*math.sin(ang), z_base - length)
+        spring = Part.makeCylinder(k_radius, length)
+        add_part(spring, f"{name}_{i+1}", (0.7,0.7,0.72), base=base)
+
+def add_interface_ring(flat, z_base, ring_w=0.10, ring_t=0.04, bolt_count=12, name="Interface_Ring"):
+    R = flat / math.sqrt(3)
+    outer = Part.makeCylinder(R + ring_w, ring_t)
+    inner = Part.makeCylinder(max(R - ring_w, 0.01), ring_t)
+    ring = outer.cut(inner)
+    obj = add_part(ring, name, (0.6,0.62,0.66), base=App.Vector(0,0,z_base - ring_t))
+
+    # Pernos/bosses de sujeción repartidos 360°
+    for i in range(bolt_count):
+        ang = 2*math.pi*i/bolt_count
+        r_b = R + ring_w*0.6
+        p = App.Vector(r_b*math.cos(ang), r_b*math.sin(ang), z_base - ring_t)
+        bolt = Part.makeCylinder(0.012, ring_t*1.1)
+        add_part(bolt, f"{name}_Bolt_{i+1}", (0.75,0.75,0.78), base=p)
+    return obj
+
+def add_separation_springs(flat, z_base, count=6, k_radius=0.02, length=0.05, name="Sep_Spring"):
+    R = flat / math.sqrt(3)
+    for i in range(count):
+        ang = 2*math.pi*i/count
+        r = R + 0.06
+        base = App.Vector(r*math.cos(ang), r*math.sin(ang), z_base - length)
+        spring = Part.makeCylinder(k_radius, length)
+        add_part(spring, f"{name}_{i+1}", (0.7,0.7,0.72), base=base)
+
+def face_center(flat, z, az_deg, offset=0.02):
+    R = flat / math.sqrt(3)
+    a = math.radians(az_deg)
+    n = App.Vector(math.cos(a), math.sin(a), 0)
+    return App.Vector(R*math.cos(a), R*math.sin(a), z) + n.multiply(offset), n
+
+def add_patch_antenna_on_face(flat, z_center, az_deg, w=0.35, h=0.25, t=0.01, name="Patch"):
+    center, n = face_center(flat, z_center, az_deg, offset=0.02)
+    # panel centrado con su normal apuntando hacia fuera
+    panel = Part.makeBox(w, t, h)
+    obj = add_part(panel, f"{name}_{az_deg}", (0.9,0.85,0.1), base=center - App.Vector(w/2, t/2, h/2))
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,1,0), 90) * App.Rotation(App.Vector(0,0,1), az_deg)
+    return obj
+
+def add_cross_dipole(pos, arm_len=0.45, arm_r=0.006, name="Cross_Dipole"):
+    # Dos dipolos perpendiculares en el plano XY
+    for i, ang in enumerate([0, 90]):
+        rod = Part.makeCylinder(arm_r, 2*arm_len)
+        obj = add_part(rod, f"{name}_{i+1}", (0.75,0.75,0.8))
+        obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), ang)
+        obj.Placement.Base = pos - App.Vector(arm_len, 0, 0) if ang==0 else pos - App.Vector(0, arm_len, 0)
+    # Mástil corto
+    mast = Part.makeCylinder(arm_r*1.5, 0.08)
+    add_part(mast, f"{name}_Mast", (0.7,0.7,0.74), base=pos - App.Vector(0,0,0.08))
+
+def add_dish_yoke(dish_base_point, normal_dir, span=0.30, pin_r=0.02, arm_r=0.015, name="Dish_Yoke"):
+    # Horquilla simple en torno al eje de elevación
+    n = normal_dir.normalize()
+    ref = App.Vector(0,0,1) if abs(n.z) < 0.9 else App.Vector(1,0,0)
+    u = n.cross(ref).normalize()  # eje horizontal
+    # Brazos laterales
+    left  = dish_base_point + u.multiply(-span/2)
+    right = dish_base_point + u.multiply( span/2)
+    cylinder_between(left, right, arm_r, name=f"{name}_Arm")
+    # Eje pasador
+    pin = Part.makeCylinder(pin_r, span)
+    pin_obj = add_part(pin, f"{name}_Pin", (0.68,0.7,0.74), base=left)
+    pin_obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), u)
+
+def make_cubesat_module(L, W, H, wall=0.006, name="CubeSat_Comm"):
+    outer = Part.makeBox(L, W, H)
+    inner = Part.makeBox(max(L-2*wall, 0.01), max(W-2*wall, 0.01), max(H-2*wall, 0.01))
+    inner.translate(App.Vector(wall, wall, wall))
+    body = outer.cut(inner)
+    obj = add_part(body, name, (0.62,0.68,0.75))
+    # Radiador lateral
+    rad = Part.makeBox(L*0.7, 0.01, H*0.6)
+    add_part(rad, f"{name}_Radiator", (0.82,0.84,0.9), base=App.Vector(L*0.15, -0.01, H*0.2))
+    # Antena parche superior
+    patch = Part.makeBox(L*0.4, 0.008, W*0.3)
+    add_part(patch, f"{name}_Patch", (0.95,0.9,0.2), base=App.Vector(L*0.3, W, H*0.35))
+    return obj
+
+def mount_cubesat_on_face(flat, z_center, az_deg, L, W, H, offset=0.15, name="CubeSat_Comm"):
+    center, n = face_center(flat, z_center, az_deg, offset=offset)
+    cs = make_cubesat_module(L, W, H, name=name)
+    # Orienta longitud L paralelo a la arista vertical de la cara
+    cs.Placement.Rotation = App.Rotation(App.Vector(0,0,1), az_deg) * App.Rotation(App.Vector(0,1,0), 90)
+    cs.Placement.Base = center - App.Vector(L/2, W/2, H/2)
+    # Soportes
+    for s in [-1, 1]:
+        p1 = center + App.Vector(0,0,-H/2) + n.multiply(-0.02)
+        p2 = center + App.Vector(s*L*0.35, 0, -H/2)
+        cylinder_between(p1, p2, 0.008, name=f"{name}_Bracket_{'L' if s<0 else 'R'}", color=(0.76,0.76,0.8))
+    return cs
+
+def add_cold_plate_on_face(flat, z_center, az_deg, W=0.6, H=0.4, T=0.015, inset=0.01, name="ColdPlate"):
+    center, n = face_center(flat, z_center, az_deg, offset=-inset)  # empotrada
+    plate = Part.makeBox(W, T, H)
+    obj = add_part(plate, f"{name}_{az_deg}", (0.8,0.82,0.86), base=center - App.Vector(W/2, T/2, H/2))
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,1,0), 90) * App.Rotation(App.Vector(0,0,1), az_deg)
+    return obj
+
+def add_vector_radiator(pos, normal_vec, W=1.1, H=0.7, T=0.02, name="Radiator"):
+    plate = Part.makeBox(W, T, H)
+    obj = add_part(plate, name, (0.82,0.84,0.9), base=pos - App.Vector(W/2, T/2, H/2))
+    obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), normal_vec)
+    return obj
+
+def route_heatpipe(p_start, p_end, r=0.008, name="HeatPipe"):
+    return cylinder_between(p_start, p_end, r, name=name, color=(0.86,0.6,0.3))
+
+def add_louver_radiator(pos, normal_vec, W=1.0, H=0.6, slat_t=0.006, gap=0.006, count=20, name="Louver"):
+    # Marco
+    frame = Part.makeBox(W, slat_t, H)
+    frame_obj = add_part(frame, f"{name}_Frame", (0.78,0.8,0.85), base=pos - App.Vector(W/2, slat_t/2, H/2))
+    frame_obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), normal_vec)
+    # Lamas
+    step = (H - slat_t) / max(count,1)
+    for i in range(count):
+        lama = Part.makeBox(W*0.95, slat_t, max(step-gap, slat_t))
+        base = pos - App.Vector(W*0.95/2, slat_t/2, H/2 - i*step)
+        lam_obj = add_part(lama, f"{name}_Slat_{i+1}", (0.9,0.9,0.92), base=base)
+        lam_obj.Placement.Rotation = App.Rotation(App.Vector(0,0,1), normal_vec) * App.Rotation(App.Vector(1,0,0), 15)
+
+# -------------------- Ensamblaje --------------------
+core = make_core(P)
+
+cap_top = make_flat_cap(P['core_flat'], 0.025, P['core_h'], "Core_Cap_Top")
+cap_bot = make_flat_cap(P['core_flat'], 0.025, -0.025, "Core_Cap_Bottom")
+
+
+collar_top = add_collar_around(P['core_flat']+0.08, P['core_h']*0.66, P['collar_h'], P['collar_t'], "Core_Collar_Top")
+
+cut_hatch_on_cap(cap_top, P, center_z=P['core_h'])
+
+outer_z0 = (P['core_h'] - P['outer_h'])/2.0
+outer = make_outer_hex_frame(P, z0=outer_z0)
+add_hex_perimeter_bosses(P['outer_flat'], outer_z0 + P['outer_h']/2.0, P['boss_R'], P['boss_H'], count=12, name="Outer_Boss")
+
+Rcirc_outer = P['outer_flat']/math.sqrt(3)
+anchors = [
+    App.Vector( Rcirc_outer, 0, outer_z0 + P['outer_h']/2.0),
+    App.Vector(-Rcirc_outer, 0, outer_z0 + P['outer_h']/2.0)
+]
+normals = [App.Vector(1,0,0), App.Vector(-1,0,0)]
+for i, (a, n) in enumerate(zip(anchors, normals), start=1):
+    mount_hex_dish_with_mast(P, a, n, idx=i)
+
+payload_z = - (P['payload_h'] + 0.10)
+payload, payload_collar = make_payload_hex(P, z_attach=payload_z)
+
+for az in [30, 150, 270]:
+    ang = math.radians(az)
+    R_core = (P['core_flat']/2.0)
+    pc = App.Vector(R_core*math.cos(ang), R_core*math.sin(ang), P['core_h']*0.66 + P['collar_h']/2.0)
+    R_pay = (P['payload_flat']/2.0) + 0.06
+    pp = App.Vector(R_pay*math.cos(ang), R_pay*math.sin(ang), payload_z + P['collar_h']/2.0)
+    cylinder_between(pc, pp, P['strut_R']*1.1, name=f"Strut_Core2Payload_{az}", color=(0.80,0.80,0.84))
+
+
+# Parche en dos caras
+for az in [60, 240]:
+    add_patch_antenna_on_face(P['core_flat'], P['core_h']/2, az, w=P['patch_w'], h=P['patch_h'], t=P['patch_t'])
+
+# Dipolo cruzado en la tapa superior
+add_cross_dipole(App.Vector(0,0,P['core_h']+0.05]))
+
+ 
+    
+# Blindaje meteoritos
+add_whipple_shield(P['core_flat'], P['core_h'])
+
+# Mantilla térmica multicapa
+add_thermal_blanket(P['core_flat'], P['core_h'])
+# Escudos y blindajes
+add_whipple_shield(P['core_flat'], P['core_h'])
+add_radiation_shield(P['core_flat'], P['core_h'])
+add_internal_electronics_shield(P['core_flat'], P['core_h'])
+add_neutron_panels(P['core_flat'], P['core_h'])
+add_ablative_shield(P['core_flat'], P['core_h'])
+
+add_interface_ring(P['core_flat'], z_base=0.0, ring_w=P['mount_ring_w'], ring_t=P['mount_ring_t'], bolt_count=P['mount_bolts'])
+add_separation_springs(P['core_flat'], z_base=0.0)
+
+mount_cubesat_on_face(P['core_flat'], z_center=P['core_h']/2, az_deg=300,L=P['cubesat_L'], W=P['cubesat_W'], H=P['cubesat_H'], offset=P['cubesat_offset'])
+
+# Placa fría empotrada en la cara a 120°
+add_cold_plate_on_face(P['core_flat'], P['core_h']/2, 120, W=P['coldplate_W'], H=P['coldplate_H'], T=P['coldplate_T'])
+
+# Radiador mirando -Y, despegado del core
+rad_pos = App.Vector(0, -(P['core_flat']/math.sqrt(3) + 0.25), P['core_h']/2)
+rad = add_vector_radiator(rad_pos, App.Vector(0,-1,0), W=P['radiator_W'], H=P['radiator_H'], T=P['radiator_T'])
+
+# Heatpipes desde placa fría al radiador (dos líneas)
+cp_center, cp_n = face_center(P['core_flat'], P['core_h']/2, 120, offset=-0.01)
+for dx in [-0.15, 0.15]:
+    p1 = cp_center + App.Vector(dx, 0, 0)
+    p2 = rad_pos + App.Vector(dx, 0, 0)
+    route_heatpipe(p1, p2, r=P['heatpipe_R'])
+
+
+# Paneles solares
+if P['add_solar']:
+    for az in [0, 60, 120, 180, 240, 300]:
+        add_hex_solar_panel(P['core_flat'], P['panel_W'], P['panel_T'], az, P['core_h']/2)
+
+# Radiador en una cara lateral
+add_radiator_plate(1.2, 0.8, 0.02, App.Vector(0, -P['core_flat'], P['core_h']/2), 0)
+
+# Antenas pequeñas en parte superior
+add_small_antenna(App.Vector(0,0,P['core_h']+0.05), length=0.4, tilt_deg=30)
+
+doc.recompute()
+print("HexSat_Fixed ensamblado correctamente.")

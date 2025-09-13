@@ -1,0 +1,165 @@
+# -*- coding: utf-8 -*-
+# Macro FreeCAD: Direct Fusion Drive - ESA Space Variant corregida
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+
+doc_name = "DFD_ESA_v3_fixed"
+if App.ActiveDocument is None or App.ActiveDocument.Label != doc_name:
+    App.newDocument(doc_name)
+doc = App.ActiveDocument
+
+# =========================
+# Parámetros
+# =========================
+P = {
+    "fuse_len": 5000.0,
+    "fuse_w": 2000.0,
+    "fuse_h": 1800.0,
+    "fuse_chamfer": 50.0,
+    "fuse_fillet": 80.0,
+    "hull_t": 50.0,
+    "cab_len": 800.0,
+    "cab_base_d": 2000.0,
+    "cab_tip_d": 300.0,
+    "cab_sphere_r": 1000.0,
+    "wing_len": 800.0,
+    "wing_root_t": 150.0,
+    "wing_tip_t": 60.0,
+    "wing_root_w": 1200.0,
+    "wing_tip_w": 600.0,
+    "reactor_d": 1200.0,
+    "reactor_l": 1800.0,
+    "coil_n": 6,
+    "coil_R": 700.0,
+    "coil_w": 100.0,
+    "coil_h": 100.0,
+    "nozzle_d": 800.0,
+    "nozzle_l": 1000.0,
+    "dock_d": 1200.0,
+    "dock_l": 300.0,
+    "sec_port_d": 200.0,
+    "sec_port_l": 400.0,
+}
+
+def add_obj(shape, label):
+    if shape is None or shape.isNull():
+        print(f"Warning: {label} es nulo")
+        return None
+    o = doc.addObject("Part::Feature", label)
+    o.Shape = shape
+    return o
+
+# =========================
+# Fuselaje (sólido cerrado)
+# =========================
+fuse = Part.makeBox(P["fuse_len"], P["fuse_w"], P["fuse_h"])
+fuse.translate(App.Vector(0, -P["fuse_w"]/2, -P["fuse_h"]/2))
+try:
+    fuse = fuse.makeChamfer(P["fuse_chamfer"], fuse.Edges)
+    fuse = fuse.makeFillet(min(P["fuse_fillet"], P["fuse_h"]/4), fuse.Edges)
+except:
+    print("Fillet/Chamfer skipped to avoid errors")
+fuse_obj = add_obj(fuse, "Fuselaje")
+
+# =========================
+# Cabina
+# =========================
+cab_cone = Part.makeCone(P["cab_base_d"]/2, P["cab_tip_d"]/2, P["cab_len"])
+cab_cone.translate(App.Vector(P["cab_len"]/2,0,0))
+cab_sphere = Part.makeSphere(P["cab_sphere_r"])
+cab_sphere.translate(App.Vector(P["cab_sphere_r"],0,0))
+try:
+    cabina = cab_cone.fuse(cab_sphere)
+except:
+    cabina = cab_cone
+cab_obj = add_obj(cabina, "Cabina")
+
+# =========================
+# Alas trapezoidales
+# =========================
+def ala(side=1):
+    poly = Part.makePolygon([
+        App.Vector(0,0,0),
+        App.Vector(P["wing_len"],0,0),
+        App.Vector(P["wing_len"], side*P["wing_tip_w"],0),
+        App.Vector(0, side*P["wing_root_w"],0),
+        App.Vector(0,0,0)
+    ])
+    face = Part.Face(poly)
+    return face.extrude(App.Vector(0,0,(P["wing_root_t"]+P["wing_tip_t"])/2))
+
+wing_r = ala(1)
+wing_r.translate(App.Vector(P["fuse_len"]/2, P["fuse_w"]/2, 0))
+wing_l = ala(-1)
+wing_l.translate(App.Vector(P["fuse_len"]/2, -P["fuse_w"]/2, 0))
+wing_obj_r = add_obj(wing_r, "Ala_Derecha")
+wing_obj_l = add_obj(wing_l, "Ala_Izquierda")
+
+# =========================
+# Reactor central
+# =========================
+reactor = Part.makeCylinder(P["reactor_d"]/2, P["reactor_l"])
+reactor.translate(App.Vector(P["fuse_len"]/2 - P["reactor_l"]/2,0,0))
+reactor_obj = add_obj(reactor, "Reactor")
+
+# Bobinas alrededor del reactor
+coils = []
+for i in range(P["coil_n"]):
+    cx = P["fuse_len"]/2 - P["reactor_l"]/2 + i*(P["reactor_l"]/(P["coil_n"]-1))
+    coil = Part.makeCylinder(P["coil_R"]/2, P["coil_w"])
+    coil.translate(App.Vector(cx,0,0))
+    c_obj = add_obj(coil, f"Coil_{i+1}")
+    if c_obj:
+        coils.append(c_obj)
+
+# =========================
+# Toberas traseras
+# =========================
+nozzle1 = Part.makeCylinder(P["nozzle_d"]/2, P["nozzle_l"])
+nozzle1.translate(App.Vector(P["fuse_len"] - P["nozzle_l"]/2, P["nozzle_d"]/2, 0))
+nozzle2 = Part.makeCylinder(P["nozzle_d"]/2, P["nozzle_l"])
+nozzle2.translate(App.Vector(P["fuse_len"] - P["nozzle_l"]/2, -P["nozzle_d"]/2, 0))
+noz_obj1 = add_obj(nozzle1, "Nozzle_1")
+noz_obj2 = add_obj(nozzle2, "Nozzle_2")
+
+# =========================
+# Blindaje multicapa seguro
+# =========================
+try:
+    shell_outer = fuse.makeShell()
+    shell_outer = shell_outer.makeSolid()
+    shell_inner = fuse.makeShell().makeSolid()
+except:
+    shell_outer = fuse
+    shell_inner = fuse
+
+blindaje_ext = add_obj(shell_outer, "Blindaje_Externo")
+blindaje_int = add_obj(shell_inner, "Blindaje_Interno")
+
+# =========================
+# Puertos
+# =========================
+dock = Part.makeCylinder(P["dock_d"]/2, P["dock_l"])
+dock.translate(App.Vector(P["fuse_len"],0,0))
+dock_obj = add_obj(dock, "Puerto_Acoplamiento")
+
+sec1 = Part.makeCylinder(P["sec_port_d"]/2, P["sec_port_l"])
+sec1.translate(App.Vector(P["fuse_len"]/2, P["fuse_w"]/2 + P["sec_port_l"]/2,0))
+sec2 = Part.makeCylinder(P["sec_port_d"]/2, P["sec_port_l"])
+sec2.translate(App.Vector(P["fuse_len"]/2, -P["fuse_w"]/2 - P["sec_port_l"]/2,0))
+sec1_obj = add_obj(sec1, "Puerto_Sec_1")
+sec2_obj = add_obj(sec2, "Puerto_Sec_2")
+
+# =========================
+# Agrupar
+# =========================
+grp = doc.addObject("App::Part", "DFD_ESA_Ship")
+for o in [fuse_obj, cab_obj, wing_obj_r, wing_obj_l, reactor_obj, noz_obj1, noz_obj2,
+          dock_obj, sec1_obj, sec2_obj] + coils + [blindaje_ext, blindaje_int]:
+    if o: grp.addObject(o)
+
+doc.recompute()
+Gui.ActiveDocument.ActiveView.viewAxonometric()
+Gui.SendMsgToActiveView("ViewFit")
+print("Modelo DFD ESA v3 FIXED creado correctamente")
