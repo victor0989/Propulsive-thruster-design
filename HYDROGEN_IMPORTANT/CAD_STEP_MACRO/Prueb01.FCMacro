@@ -1,0 +1,212 @@
+# -*- coding: utf-8 -*-
+# FreeCAD Macro: Nave Direct Fusion Drive - Variante Extendida Robusta XL
+# Autor: Víctor Alonso García + GPT-5-mini
+# Descripción: Nave espacial grande, realista, con módulos, blindajes, radiadores, tanques, sensores y tren de aterrizaje
+# Unidades: mm
+
+import FreeCAD as App
+import Part
+import math
+
+doc = App.newDocument("Nave_DFD_XL")
+
+# ========================
+# Parámetros de diseño
+# ========================
+P = {
+    'scale': 2.0,  # Escala de la nave
+
+    # Fuselaje
+    'nose_len': 1500.0, 'nose_base_d': 1100.0,
+    'mid_len': 3000.0, 'mid_d': 1800.0,
+    'rear_len': 1500.0, 'rear_d': 2200.0,
+    'hull_t': 30.0,  # Grosor del casco
+
+    # Reactor
+    'reactor_d': 1500.0, 'reactor_l': 1800.0,
+
+    # Blindaje ablativo
+    'shield_t': 150.0, 'shield_l': 3000.0,
+
+    # Módulo hábitat
+    'hab_d': 1400.0, 'hab_l': 2500.0,
+
+    # Cabina
+    'cockpit_d': 900.0, 'cockpit_l': 800.0, 'window_r': 150.0,
+
+    # Tanques laterales
+    'tank_r': 400.0, 'tank_l': 2000.0, 'tank_off': 1200.0,
+
+    # Tanques esféricos
+    'sphere_r': 450.0, 'sphere_off': 1600.0,
+
+    # Alas / radiadores
+    'wing_span': 2500.0, 'wing_th': 60.0, 'wing_l': 2200.0,
+
+    # Antenas
+    'mast_l': 1000.0, 'mast_r': 40.0, 'dish_r': 400.0,
+
+    # Tren de aterrizaje
+    'leg_r': 100.0, 'leg_l': 800.0, 'foot_r': 250.0, 'foot_t': 50.0,
+
+    # Escotillas y acoplamiento
+    'dock_r': 400.0, 'dock_l': 300.0, 'dock_off': 800.0,
+
+    # Sensores
+    'sensor_r': 50.0, 'sensor_l': 200.0,
+
+    # Refuerzos internos
+    'beam_r': 50.0, 'beam_l': 3000.0
+}
+
+# ========================
+# Función auxiliar
+# ========================
+def add_obj(shape, name):
+    obj = doc.addObject("Part::Feature", name)
+    obj.Shape = shape
+    return obj
+
+# ========================
+# Fuselaje principal (hueco)
+# ========================
+nose_outer = Part.makeCone(P['nose_base_d']/2, P['mid_d']/2, P['nose_len'])
+mid_outer = Part.makeCylinder(P['mid_d']/2, P['mid_len'])
+mid_outer.translate(App.Vector(0,0,P['nose_len']))
+rear_outer = Part.makeCone(P['rear_d']/2, P['mid_d']/2, P['rear_len'])
+rear_outer.translate(App.Vector(0,0,P['nose_len']+P['mid_len']))
+hull_outer = nose_outer.fuse(mid_outer).fuse(rear_outer)
+
+# Casco interior hueco
+nose_inner = Part.makeCone(P['nose_base_d']/2 - P['hull_t'], P['mid_d']/2 - P['hull_t'], P['nose_len'])
+mid_inner = Part.makeCylinder(P['mid_d']/2 - P['hull_t'], P['mid_len'])
+mid_inner.translate(App.Vector(0,0,P['nose_len']))
+rear_inner = Part.makeCone(P['rear_d']/2 - P['hull_t'], P['mid_d']/2 - P['hull_t'], P['rear_len'])
+rear_inner.translate(App.Vector(0,0,P['nose_len']+P['mid_len']))
+hull_inner = nose_inner.fuse(mid_inner).fuse(rear_inner)
+
+# Hueco final
+hull = hull_outer.cut(hull_inner)
+hull_obj = add_obj(hull, "Hull_Hueco")
+
+# ========================
+# Cabina de mando
+# ========================
+cockpit = Part.makeCylinder(P['cockpit_d']/2, P['cockpit_l'])
+cockpit.translate(App.Vector(0,0,50))
+window = Part.makeSphere(P['window_r'])
+window.translate(App.Vector(P['cockpit_d']/3,0,P['cockpit_l']/2))
+cockpit_cut = cockpit.cut(window)
+cockpit_obj = add_obj(cockpit_cut, "Cabina")
+
+# ========================
+# Reactor + boquilla + blindaje ablativo
+# ========================
+reactor = Part.makeCylinder(P['reactor_d']/2, P['reactor_l'])
+reactor.translate(App.Vector(0,0,P['nose_len']+1200))
+nozzle = Part.makeCone(P['rear_d']/2, P['rear_d'], 1000)
+nozzle.translate(App.Vector(0,0,P['nose_len']+P['mid_len']+P['rear_len']))
+reactor_full = reactor.fuse(nozzle)
+
+shield = Part.makeCylinder(P['reactor_d']/2 + P['shield_t'], P['shield_l'])
+shield.translate(App.Vector(0,0,P['nose_len']+700))
+reactor_obj = add_obj(reactor_full.fuse(shield), "ReactorBlindado")
+
+# ========================
+# Módulo hábitat
+# ========================
+hab = Part.makeCylinder(P['hab_d']/2, P['hab_l'])
+hab.translate(App.Vector(0,0,P['nose_len']+P['mid_len']+500))
+hab_obj = add_obj(hab, "Habitat")
+
+# ========================
+# Tanques laterales y esféricos
+# ========================
+tankL = Part.makeCylinder(P['tank_r'], P['tank_l'])
+tankL.translate(App.Vector(P['tank_off'],0,P['nose_len']+1000))
+tankR = Part.makeCylinder(P['tank_r'], P['tank_l'])
+tankR.translate(App.Vector(-P['tank_off'],0,P['nose_len']+1000))
+sphereL = Part.makeSphere(P['sphere_r'])
+sphereL.translate(App.Vector(P['sphere_off'],0,P['nose_len']+2500))
+sphereR = Part.makeSphere(P['sphere_r'])
+sphereR.translate(App.Vector(-P['sphere_off'],0,P['nose_len']+2500))
+tanks = tankL.fuse(tankR).fuse(sphereL).fuse(sphereR)
+tanks_obj = add_obj(tanks, "Tanques_Completos")
+
+# ========================
+# Alas / radiadores
+# ========================
+wingL = Part.makeBox(P['wing_span'], P['wing_th'], P['wing_l'])
+wingL.translate(App.Vector(-P['wing_span']/2, -P['mid_d']/2-150, P['nose_len']+1500))
+wingR = Part.makeBox(P['wing_span'], P['wing_th'], P['wing_l'])
+wingR.translate(App.Vector(-P['wing_span']/2, P['mid_d']/2+150, P['nose_len']+1500))
+wing_obj = add_obj(wingL.fuse(wingR), "Radiadores")
+
+# ========================
+# Escotillas y acoplamientos
+# ========================
+dockL = Part.makeCylinder(P['dock_r'], P['dock_l'])
+dockL.translate(App.Vector(P['dock_off'],0,P['nose_len']+1800))
+dockR = Part.makeCylinder(P['dock_r'], P['dock_l'])
+dockR.translate(App.Vector(-P['dock_off'],0,P['nose_len']+1800))
+docking_obj = add_obj(dockL.fuse(dockR), "Acoplamientos")
+
+# ========================
+# Sensores y cámaras externas
+# ========================
+sensor1 = Part.makeSphere(P['sensor_r'])
+sensor1.translate(App.Vector(P['mid_d']/2+100,0,P['nose_len']+2000))
+sensor2 = Part.makeSphere(P['sensor_r'])
+sensor2.translate(App.Vector(-P['mid_d']/2-100,0,P['nose_len']+2000))
+sensors_obj = add_obj(sensor1.fuse(sensor2), "Sensores")
+
+# ========================
+# Refuerzos internos
+# ========================
+beam1 = Part.makeCylinder(P['beam_r'], P['beam_l'])
+beam1.translate(App.Vector(0,0,P['nose_len']))
+beam2 = Part.makeCylinder(P['beam_r'], P['beam_l'])
+beam2.translate(App.Vector(0,0,P['nose_len']+P['mid_len']))
+beams_obj = add_obj(beam1.fuse(beam2), "Refuerzos")
+
+# ========================
+# Antena + parabólica (escala correcta)
+# ========================
+mast = Part.makeCylinder(P['mast_r'], P['mast_l'])
+mast.translate(App.Vector(P['mid_d']/2+100,0,P['nose_len']+P['mid_len']))
+
+dish = Part.makeSphere(P['dish_r'])
+# FreeCAD escala usando Placement + Vector
+dish.Placement.Scale = App.Vector(1,1,0.3)
+dish.translate(App.Vector(P['mid_d']/2+100,0,P['nose_len']+P['mid_len']+P['mast_l']))
+antenna = mast.fuse(dish)
+antenna_obj = add_obj(antenna, "Antena")
+
+# ========================
+# Tren de aterrizaje 4 patas
+# ========================
+legs = []
+for angle in [0,90,180,270]:
+    leg = Part.makeCylinder(P['leg_r'], P['leg_l'])
+    leg.translate(App.Vector(P['mid_d']/2*math.cos(math.radians(angle)),
+                             P['mid_d']/2*math.sin(math.radians(angle)),0))
+    foot = Part.makeCylinder(P['foot_r'], P['foot_t'])
+    foot.translate(App.Vector(P['mid_d']/2*math.cos(math.radians(angle)),
+                              P['mid_d']/2*math.sin(math.radians(angle)),-P['foot_t']))
+    legs.append(leg.fuse(foot))
+landing_full = legs[0].fuse(legs[1]).fuse(legs[2]).fuse(legs[3])
+landing_obj = add_obj(landing_full, "Tren_Aterrizaje")
+
+# ========================
+# Ensamblaje final
+# ========================
+nave = hull.fuse(cockpit_cut).fuse(reactor_full).fuse(shield).fuse(hab).fuse(tanks)\
+      .fuse(wingL).fuse(wingR).fuse(dockL).fuse(dockR).fuse(sensor1).fuse(sensor2)\
+      .fuse(beam1).fuse(beam2).fuse(antenna).fuse(landing_full)
+nave_obj = add_obj(nave, "Nave_Ensamblada_XL")
+
+# ========================
+# Recompute
+# ========================
+doc.recompute()
+

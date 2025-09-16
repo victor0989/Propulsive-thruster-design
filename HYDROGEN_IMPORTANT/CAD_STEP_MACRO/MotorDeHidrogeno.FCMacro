@@ -1,0 +1,186 @@
+# -*- coding: utf-8 -*-
+# Direct_Fusion_Drive: Tokamak H2 + TPS Parker + blindaje térmico y motor de hidrógeno (sin TechDraw)
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc_name="Direct_Fusion_Drive"
+if App.ActiveDocument is None or App.ActiveDocument.Label!=doc_name:
+    App.newDocument(doc_name)
+doc=App.ActiveDocument
+
+# ------------------ Parámetros base ------------------
+P={"nose_len":800.0,"nose_base_d":600.0,"mid_len":1400.0,"mid_d":900.0,
+   "rear_len":800.0,"rear_d":1200.0,"hull_t":10.0,
+   "reactor_d":800.0,"reactor_l":900.0,"reactor_cx":2600.0,
+   "nozzle_throat_d":300.0,"nozzle_exit_d":900.0,"nozzle_l":700.0,"nozzle_cx":2850.0,
+   "rad_panel_w":800.0,"rad_panel_h":600.0,"rad_panel_n":5}
+
+TPS={"tps_d":2400.0,"tps_t":100.0,"tps_gap":120.0,"sup_L":280.0,"sup_d_base":900.0,"sup_d_tip":600.0}
+
+# ------------------ Parámetros tokamak ------------------
+TK={
+  "Rm":300.0, "r_sec":90.0, "t_wall":8.0,
+  "cry_gap":35.0, "cry_t":16.0,
+  "N_TF":24, "TF_flat":120.0, "TF_th":16.0,
+  "N_PF":8, "PF_r":26.0, "PF_R":250.0, "PF_span":900.0,
+  "sol_R":140.0, "sol_r":42.0, "sol_L":700.0,
+  "N_ports":8, "D_port":150.0, "L_port":240.0,
+  "N_RF":4, "RF_R":310.0, "RF_r":16.0, "RF_phase_deg":22.5,
+  "variant":"aerospike", "Ae_Ar":6.0, "ann_gap":18.0, "ann_len":70.0
+}
+
+# ------------------ Materiales ------------------
+MAT={'AL':('AA-2xxx',2700.0),'316L':('SS-316L',7980.0),'718':('Inconel-718',8190.0),
+     'CFRP':('CFRP',1550.0),'6061':('AA-6061-T6',2710.0),'Cu':('Copper',8960.0),
+     'CC':('C/C TPS',1600.0),'CER':('SiC Liner',3200.0)}
+
+X=App.Vector(1,0,0); Y=App.Vector(0,1,0); Z=App.Vector(0,0,1)
+def rot_to_x(): return App.Rotation(Y,90)
+
+def add_obj(shape,label,color=(0.2,0.4,0.8)):
+    o=doc.addObject("Part::Feature",label); o.Shape=shape
+    try: o.ViewObject.ShapeColor=color
+    except: pass
+    return o
+
+def set_mat(o,key):
+    name,rho = MAT[key]
+    o.addProperty("App::PropertyString","Material","Meta","").Material=name
+    o.addProperty("App::PropertyFloat","Density","Meta","").Density=rho
+    vol = o.Shape.Volume/1e9
+    o.addProperty("App::PropertyFloat","Mass","Meta","").Mass = vol*rho
+
+def cylX(d,L,c=(0,0,0),label="CylX"):
+    s=Part.makeCylinder(d/2.0, L)
+    s.Placement = App.Placement(App.Vector(c[0]-L/2.0,c[1],c[2]), rot_to_x())
+    return add_obj(s,label)
+
+def coneX(d1,d2,L,c=(0,0,0),label="ConeX"):
+    s=Part.makeCone(d1/2.0, d2/2.0, L)
+    s.Placement = App.Placement(App.Vector(c[0]-L/2.0,c[1],c[2]), rot_to_x())
+    return add_obj(s,label)
+
+def torusX(R,r,c=(0,0,0),label="TorusX"):
+    s=Part.makeTorus(R,r)
+    s.Placement = App.Placement(App.Vector(c[0],c[1],c[2]), rot_to_x())
+    return add_obj(s,label)
+
+def box(w,d,h,c=(0,0,0),label="Box"):
+    s=Part.makeBox(w,d,h)
+    s.Placement = App.Placement(App.Vector(c[0]-w/2.0,c[1]-d/2.0,c[2]-h/2.0), App.Rotation())
+    return add_obj(s,label)
+
+def shell_from_solid(solid,t,label):
+    try:
+        inner = solid.makeOffsetShape(-t,0.02,join=2,fill=True)
+        return add_obj(solid.cut(inner), label)
+    except Exception:
+        return add_obj(solid, label+"_fallback")
+
+# ------------------ Casco + TPS multicapa ------------------
+nose = coneX(P["nose_base_d"],0.0, P["nose_len"], (P["nose_len"]/2.0,0,0), "Nose"); set_mat(nose,'AL')
+mid  = cylX(P["mid_d"], P["mid_len"], (P["nose_len"]+P["mid_len"]/2.0,0,0), "Mid"); set_mat(mid,'AL')
+rear = cylX(P["rear_d"], P["rear_len"], (P["nose_len"]+P["mid_len"]+P["rear_len"]/2.0,0,0), "Rear"); set_mat(rear,'AL')
+hull_outer = nose.Shape.fuse(mid.Shape).fuse(rear.Shape)
+hull = shell_from_solid(hull_outer, P["hull_t"], "Hull_Shell"); set_mat(hull,'AL')
+
+tip = P["nose_len"]
+# soporte TPS 316L
+tps_sup = coneX(TPS["sup_d_base"], TPS["sup_d_tip"], TPS["sup_L"], (tip+TPS["tps_gap"]+TPS["sup_L"]/2.0,0,0), "TPS_Support"); set_mat(tps_sup,'316L')
+# disco C/C
+tps_core = cylX(TPS["tps_d"], TPS["tps_t"], (tip+TPS["tps_gap"]+TPS["sup_L"]+TPS["tps_t"]/2.0,0,0), "TPS_Core"); set_mat(tps_core,'CC')
+# aro disipador periférico (AL)
+tps_ring_o = cylX(TPS["tps_d"]+120.0, 20.0, (tip+TPS["tps_gap"]+TPS["sup_L"]+TPS["tps_t"]+10.0,0,0), "TPS_Ring_O")
+tps_ring_i = cylX(TPS["tps_d"]+40.0, 18.0, (tip+TPS["tps_gap"]+TPS["sup_L"]+TPS["tps_t"]+11.0,0,0), "TPS_Ring_I")
+tps_ring = add_obj(tps_ring_o.Shape.cut(tps_ring_i.Shape), "TPS_Diss_Ring"); set_mat(tps_ring,'AL')
+
+# ------------------ Tokamak de hidrógeno ------------------
+cx = P["reactor_cx"]
+# Toro-ducto: cascarón 316L + liner cerámico
+toro_s = torusX(TK["Rm"], TK["r_sec"], (cx,0,0), "Toro_Solid")
+toro   = shell_from_solid(toro_s.Shape, TK["t_wall"], "Toro_316L"); set_mat(toro,'316L')
+
+liner_i = torusX(TK["Rm"], TK["r_sec"]-TK["t_wall"]-6.0, (cx,0,0), "Liner_Solid")
+liner   = shell_from_solid(liner_i.Shape, 6.0, "Liner_CER"); set_mat(liner,'CER')
+
+# Camisa intermedia 316L (amortiguador térmico)
+jacket_s = torusX(TK["Rm"], TK["r_sec"]-2.0, (cx,0,0), "Jacket_Solid")
+jacket   = shell_from_solid(jacket_s.Shape, 4.0, "Jacket_316L"); set_mat(jacket,'316L')
+
+# Criostato doble capa (gap tipo MLI)
+cry_o = torusX(TK["Rm"]+TK["cry_gap"]+TK["cry_t"], TK["r_sec"], (cx,0,0), "Cryostat_O")
+cry_i = torusX(TK["Rm"]+TK["cry_gap"], TK["r_sec"]-TK["t_wall"], (cx,0,0), "Cryostat_I")
+cry   = add_obj(cry_o.Shape.cut(cry_i.Shape), "Cryostat"); set_mat(cry,'AL')
+
+# TF tipo D densas
+TF=[]
+for k in range(TK["N_TF"]):
+    a = 360.0/TK["N_TF"]*k
+    frame_o = torusX(TK["Rm"], TK["TF_flat"]/2.0, (cx,0,0), f"TFo_{k:02d}")
+    frame_i = torusX(TK["Rm"], TK["TF_flat"]/2.0 - TK["TF_th"], (cx,0,0), f"TFi_{k:02d}")
+    tf = add_obj(frame_o.Shape.cut(frame_i.Shape), f"TF_{k:02d}", (0.85,0.5,0.2)); set_mat(tf,'Cu')
+    tf.Placement = App.Placement(tf.Placement.Base, App.Rotation(X, a)); TF.append(tf)
+
+# PF en ±Z y solenoide axial
+PF=[]
+for k in range(TK["N_PF"]):
+    z = (-TK["N_PF"]/2 + 0.5 + k) * (TK["PF_span"]/TK["N_PF"])
+    pf = torusX(TK["PF_R"], TK["PF_r"], (cx,0,z), f"PF_{k:02d}")
+    set_mat(pf,'Cu'); PF.append(pf)
+
+sol_o = cylX(2*TK["sol_R"], TK["sol_L"], (cx,0,-TK["sol_L"]/2.0), "Solenoid_O")
+sol_i = cylX(2*(TK["sol_R"]-TK["sol_r"]), TK["sol_L"]*0.98, (cx+0.02*TK["sol_L"],0,-TK["sol_L"]/2.0), "Solenoid_I")
+sol   = add_obj(sol_o.Shape.cut(sol_i.Shape), "Solenoid"); set_mat(sol,'Cu')
+
+# Puertos diagnósticos y lazos RF/EC
+ports=[]
+for i in range(TK["N_ports"]):
+    ang = 2*math.pi*i/TK["N_ports"]
+    x   = cx
+    y   = (TK["Rm"]+TK["r_sec"]+50.0)*math.cos(ang)
+    z   = (TK["Rm"]+TK["r_sec"]+50.0)*math.sin(ang)
+    axis= App.Vector(math.cos(ang), math.sin(ang), 0)
+    p   = Part.makeCylinder(TK["D_port"]/2.0, TK["L_port"], App.Vector(x,y,z), axis)
+    po  = add_obj(p, f"Port_{i:02d}", (0.5,0.6,0.7)); set_mat(po,'316L'); ports.append(po)
+
+loops=[]
+for i in range(TK["N_RF"]):
+    ang = 360.0/TK["N_RF"]*i + TK["RF_phase_deg"]
+    rf  = torusX(TK["RF_R"], TK["RF_r"], (cx,0,0), f"RF_{i:02d}")
+    rf.Placement = App.Placement(rf.Placement.Base, App.Rotation(X, ang))
+    set_mat(rf,'Cu'); loops.append(rf)
+
+# Manifold y líneas H2 (sombra TPS)
+manif = cylX(220.0, 300.0, (cx+TK["sol_L"]/2.0+220.0, 0, -TK["r_sec"]*0.75), "Manifold"); set_mat(manif,'316L')
+line_L = cylX(20.0, 800.0, (cx-400.0,  -P["mid_d"]/2.0-40.0, -60.0), "H2_Line_L"); set_mat(line_L,'6061')
+line_R = cylX(20.0, 800.0, (cx-400.0,   P["mid_d"]/2.0+40.0, -60.0), "H2_Line_R"); set_mat(line_R,'6061')
+
+# Tobera: aerospike (por defecto) y anular
+noz_cone = coneX(P["nozzle_throat_d"], P["nozzle_exit_d"], P["nozzle_l"], (P["nozzle_cx"],0,0), "Nozzle_Aerospike"); set_mat(noz_cone,'718')
+At = math.pi*(P["nozzle_exit_d"]/2.0)**2 / TK["Ae_Ar"]
+dg = max(120.0, 2.0*math.sqrt(At/math.pi))
+ann_o = cylX(P["nozzle_exit_d"], TK["ann_len"], (P["nozzle_cx"]+P["nozzle_l"]+TK["ann_len"]/2.0,0,0), "Nozzle_Ann_O")
+ann_i = cylX(P["nozzle_exit_d"]-2*TK["ann_gap"], TK["ann_len"]*0.96, (P["nozzle_cx"]+P["nozzle_l"]+TK["ann_len"]/2.0+0.02*TK["ann_len"],0,0), "Nozzle_Ann_I")
+noz_ann = add_obj(ann_o.Shape.cut(ann_i.Shape), "Nozzle_Annulus"); set_mat(noz_ann,'316L')
+if TK["variant"]=="aerospike": noz_ann.ViewObject.Visibility=False
+else: noz_cone.ViewObject.Visibility=False
+
+# Radiadores (sombra TPS, laterales)
+RAD={"x_start":P["reactor_cx"]+240.0,"gap_x":P["rad_panel_w"]+80.0,"th":4.0,"mount_gap_y":30.0}
+rads=[]
+for i in range(P["rad_panel_n"]):
+    x = RAD["x_start"] + i*RAD["gap_x"]
+    for s in [-1,1]:
+        plate = box(P["rad_panel_w"], RAD["th"], P["rad_panel_h"], (x, s*(P["mid_d"]/2.0+RAD["mount_gap_y"]), 0), f"Rad_{i}_{s}")
+        set_mat(plate,'CFRP'); rads.append(plate)
+
+# Colores sugeridos “Parker blue”
+for o_name,color in [
+    ("Hull_Shell",(0.1,0.3,0.6)), ("TPS_Core",(0.05,0.05,0.05)), ("TPS_Support",(0.4,0.4,0.45)),
+    ("Toro_316L",(0.35,0.55,0.85)), ("Liner_CER",(0.9,0.9,0.95)), ("Jacket_316L",(0.45,0.65,0.9)),
+    ("Cryostat",(0.6,0.75,0.95)), ("Nozzle_Aerospike",(0.6,0.6,0.6)), ("Nozzle_Annulus",(0.55,0.55,0.6))
+]:
+    o = doc.getObject(o_name)
+    if o and hasattr(o,"ViewObject"): o.ViewObject.ShapeColor = color
+
+doc.recompute()
+print("Tokamak H2 blindado para plasma solar y motor de hidrógeno operativo (aerospike/anular): listo.")

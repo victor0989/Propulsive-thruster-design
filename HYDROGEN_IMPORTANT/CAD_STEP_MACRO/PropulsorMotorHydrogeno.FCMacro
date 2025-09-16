@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+# FreeCAD Macro: Motor H2 Plasma Imprimible
+# Autor: Víctor Alonso García + ChatGPT
+# Descripción: Modelo paramétrico de motor plasma con módulos imprimibles
+# Unidades: metros
+
+import FreeCAD as App, FreeCADGui as Gui, Part, math
+
+doc = App.newDocument("Motor_H2_Plasma_Imprimible")
+
+# ==============================
+# Parámetros globales
+# ==============================
+# Dimensiones principales
+D_main      = 1.20
+L_calent    = 0.35
+L_plasma    = 0.80
+L_reactor   = 0.70*0.9
+L_comb      = 0.75
+L_tobera    = 1.00
+L_tanque    = 1.00
+
+# Espesores
+t_calent    = 0.005
+t_plasma    = 0.006
+t_comb      = 0.008
+t_tobera    = 0.010
+t_tanque    = 0.004
+
+# Bridas / uniones
+t_brida     = 0.020
+w_brida     = 0.050
+n_bolts     = 16
+D_bolt_cir  = 0.90
+D_taladro   = 0.016
+D_pin       = 0.010
+R_pin       = 0.25
+tol_hol     = 0.0003
+
+# Bobinas
+R_toroid    = D_main*0.45
+r_toroid    = 0.050
+n_toroid    = 5
+p_pitch     = 0.050
+vueltas_pol = 6
+r_hilo      = 0.015
+
+# Refrigeración tobera
+n_cool      = 8
+r_cool      = 0.015
+sep_cool    = 0.060
+
+# Puertos laterales
+d_h2        = 0.08
+t_h2        = 0.004
+L_h2        = 0.45
+d_fx        = 0.10
+t_fx        = 0.004
+L_fx        = 0.55
+
+# Colores
+C_AL        = (0.40, 0.70, 1.00)
+C_INCO      = (0.60, 0.60, 0.60)
+C_CALENT    = (1.00, 0.22, 0.22)
+C_PLASMA    = (0.30, 0.30, 0.32)
+C_COIL_CU   = (0.82, 0.45, 0.12)
+C_COIL_HEL  = (0.92, 0.62, 0.22)
+C_BRIDA     = (0.18, 0.18, 0.18)
+
+# ==============================
+# Utilidades
+# ==============================
+def add_obj(shape, name, color):
+    o = doc.addObject("Part::Feature", name)
+    o.Shape = shape
+    if Gui.activeDocument():
+        o.ViewObject.ShapeColor = color
+    return o
+
+def set_material(o, nombre, espesor=None):
+    o.addProperty("App::PropertyString","Material","FEM","Material nominal").Material = nombre
+    if espesor is not None:
+        o.addProperty("App::PropertyLength","Espesor","FEM","Espesor nominal").Espesor = espesor
+
+def cilindro_hueco(d_ext, L, t, base=(0,0,0)):
+    ext = Part.makeCylinder(d_ext/2.0, L, App.Vector(*base))
+    int_ = Part.makeCylinder(d_ext/2.0 - t, L, App.Vector(*base))
+    return ext.cut(int_)
+
+def brida_anular(d_ext, grosor, ancho, z0):
+    ext = Part.makeCylinder(d_ext/2.0 + ancho, grosor, App.Vector(0,0,z0))
+    int_ = Part.makeCylinder(d_ext/2.0, grosor, App.Vector(0,0,z0))
+    return ext.cut(int_)
+
+def patron_taladros(z_mid, d_bolt_circle, d_tal, n):
+    holes = []
+    for i in range(n):
+        ang = 2*math.pi*i/n
+        x = (d_bolt_circle/2.0)*math.cos(ang)
+        y = (d_bolt_circle/2.0)*math.sin(ang)
+        holes.append(Part.makeCylinder(d_tal/2.0 + tol_hol, 0.080, App.Vector(x,y, z_mid-0.040)))
+    holes.append(Part.makeCylinder(D_pin/2.0, 0.080, App.Vector(+R_pin,0,z_mid-0.040)))
+    holes.append(Part.makeCylinder(D_pin/2.0, 0.080, App.Vector(-R_pin,0,z_mid-0.040)))
+    return Part.makeCompound(holes)
+
+def ranura_or(z_mid, d_asiento, r_seccion=0.003):
+    return Part.makeTorus(d_asiento/2.0, r_seccion, App.Vector(0,0,z_mid))
+
+def bobina_toroidal(R, r, z):
+    t = Part.makeTorus(R, r)
+    t.translate(App.Vector(0,0,z))
+    return t
+
+def bobina_poloidal(radio, paso, vueltas, r_hilo, z0):
+    pts=[]
+    N = vueltas*80
+    for i in range(N+1):
+        ang = i*(2*math.pi/80)
+        pts.append(App.Vector(radio*math.cos(ang), radio*math.sin(ang), z0 + (i/80.0)*paso))
+
+    # Wire del recorrido
+    path = Part.makePolygon(pts)
+    wire = Part.Wire(path)
+
+    # Perfil circular
+    circ = Part.Circle()
+    circ.Radius = r_hilo
+    circ.Center = pts[0]
+    perfil = Part.Wire([circ.toShape()])
+
+    # Crear pipe sólido
+    return perfil.makePipe(wire, True, True)
+
+# ==============================
+# Construcción del motor
+# ==============================
+z = 0.0
+
+# 1) Etapa de calentamiento
+o_cal = add_obj(cilindro_hueco(D_main*0.85, L_calent, t_calent, base=(0,0,z)), "Etapa Calentamiento", C_CALENT)
+set_material(o_cal, "Alúmina 95%", t_calent)
+z_cal_top = z + L_calent
+
+# Brida Calentamiento–Plasma
+o_br_cp = add_obj(brida_anular(D_main*0.90, t_brida, w_brida, z_cal_top), "Brida Calentamiento–Plasma", C_BRIDA)
+set_material(o_br_cp, "CFRP + inserto", t_brida)
+
+# 2) Cámara de plasma
+z_plasma = z_cal_top + t_brida
+o_plas = add_obj(cilindro_hueco(D_main*0.90, L_plasma, t_plasma, base=(0,0,z_plasma)), "Cámara Plasma", C_PLASMA)
+set_material(o_plas, "Inconel 718", t_plasma)
+
+# Bobinas toroidales
+for i in range(n_toroid):
+    zc = z_plasma + 0.05 + i*(L_plasma-0.10)/(n_toroid-1 if n_toroid>1 else 1)
+    add_obj(bobina_toroidal(R_toroid, r_toroid, zc), f"Bobina Toroidal {i+1}", C_COIL_CU)
+
+# Bobina poloidal
+add_obj(bobina_poloidal(R_toroid, p_pitch, vueltas_pol, r_hilo, z_plasma), "Bobina Poloidal", C_COIL_HEL)
+
+# (… resto de tu macro sigue igual que antes con las cámaras, reactor, bridas y tobera …)
+
+# ==============================
+# Taladros en bridas
+# ==============================
+def cortar_taladro_en(label, zmid, dcir, dtal, n):
+    tal = patron_taladros(zmid, dcir, dtal, n)
+    obj = None
+    for o in doc.Objects:
+        if o.Label == label: obj = o; break
+    if obj: obj.Shape = obj.Shape.cut(tal)
+
+# ==============================
+# Finalizar
+# ==============================
+doc.recompute()
+if Gui.activeDocument():
+    Gui.SendMsgToActiveView("ViewFit")

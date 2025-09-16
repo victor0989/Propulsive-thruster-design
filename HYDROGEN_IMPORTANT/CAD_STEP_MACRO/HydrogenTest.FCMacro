@@ -1,0 +1,94 @@
+import FreeCAD as App
+import Part, Draft
+import math
+
+doc = App.newDocument("Motor_H2_Plasma_Pro")
+
+# Parámetros globales
+diametro_cilindro = 1.2     # m
+longitud_total = 4.0        # m
+grosor_pared = 0.006        # m
+tolerancia_union = 0.0003   # m (0.3 mm)
+
+# Función cilindro hueco
+def cilindro_hueco(d_ext, long, grosor):
+    ext = Part.makeCylinder(d_ext/2, long)
+    int_ = Part.makeCylinder((d_ext/2)-grosor, long)
+    return ext.cut(int_)
+
+# Función bobina helicoidal (poloidal)
+def bobina_helicoidal(radio, paso, vueltas, grosor_hilo, z_offset):
+    puntos = []
+    for i in range(vueltas*50):
+        ang = i * (2*math.pi/50)
+        x = radio * math.cos(ang)
+        y = radio * math.sin(ang)
+        z = z_offset + (i/50.0) * paso
+        puntos.append(App.Vector(x,y,z))
+    hilo = Part.makePolygon(puntos)
+    perfil = Part.makeCircle(grosor_hilo, App.Vector(puntos[0]))
+    return perfil.makePipeShell([hilo], True, True)
+
+# 1. Tanque de hidrógeno
+tanque = cilindro_hueco(diametro_cilindro, 1.2, 0.004)
+Part.show(tanque)
+App.ActiveDocument.ActiveObject.Label = "Tanque Hidrógeno"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.4,0.7,1.0)
+
+# 2. Cámara de plasma
+plasma = cilindro_hueco(diametro_cilindro*0.9, 1.0, 0.006)
+plasma.translate(App.Vector(0,0,1.25))
+Part.show(plasma)
+App.ActiveDocument.ActiveObject.Label = "Cámara Plasma"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.3,0.3,0.3)
+
+# 3. Bobinas toroidales
+for i in range(5):
+    bobina_t = Part.makeTorus(diametro_cilindro*0.45, 0.05)
+    bobina_t.translate(App.Vector(0,0,1.25 + i*0.18))
+    Part.show(bobina_t)
+    App.ActiveDocument.ActiveObject.Label = f"Bobina Toroidal {i+1}"
+    App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.8,0.4,0.1)
+
+# 4. Bobinas poloidales helicoidales
+bobina_p = bobina_helicoidal(diametro_cilindro*0.45, 0.05, 6, 0.015, 1.25)
+Part.show(bobina_p)
+App.ActiveDocument.ActiveObject.Label = "Bobina Poloidal Helicoidal"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.9,0.6,0.2)
+
+# 5. Conductos internos de hidrógeno
+conducto_in = Part.makeCylinder(0.05, 1.2)
+conducto_in.translate(App.Vector(diametro_cilindro/2+0.05,0,0))
+Part.show(conducto_in)
+App.ActiveDocument.ActiveObject.Label = "Conducto Entrada H₂"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.2,0.6,1.0)
+
+# 6. Etapa de calentamiento
+calentador = cilindro_hueco(diametro_cilindro*0.85, 0.5, 0.005)
+calentador.translate(App.Vector(0,0,2.4))
+Part.show(calentador)
+App.ActiveDocument.ActiveObject.Label = "Etapa Calentamiento"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (1.0,0.2,0.2)
+
+# 7. Cámara de combustión
+combustion = cilindro_hueco(diametro_cilindro*0.8, 0.8, 0.008)
+combustion.translate(App.Vector(0,0,3.0))
+Part.show(combustion)
+App.ActiveDocument.ActiveObject.Label = "Cámara Combustión"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.6,0.6,0.6)
+
+# 8. Tobera
+tobera = Part.makeCone(diametro_cilindro*0.4, diametro_cilindro*1.2, 1.0)
+tobera.translate(App.Vector(0,0,3.8))
+Part.show(tobera)
+App.ActiveDocument.ActiveObject.Label = "Tobera Expansión"
+App.ActiveDocument.ActiveObject.ViewObject.ShapeColor = (0.5,0.5,0.5)
+
+# 9. Segmentación automática para impresión 3D
+# Cortes en Z para módulos
+planos_corte = [1.2, 2.25, 2.9, 3.7]
+for z in planos_corte:
+    plano = Part.makePlane(3,3,App.Vector(0,0,z))
+    # Aquí podrías usar operaciones booleanas para separar sólidos
+
+App.ActiveDocument.recompute()

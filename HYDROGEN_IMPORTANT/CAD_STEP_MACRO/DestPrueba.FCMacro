@@ -1,0 +1,249 @@
+# -*- coding: utf-8 -*-
+# Macro: Nave_ESA_Parametrica
+# Autor: Copilot + corrección FreeCAD
+# Descripción: Modelo paramétrico de nave con cálculo de masa/CG y propiedades clave.
+
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+import math
+
+# =============================
+# PARÁMETROS (metros, kg/m^3)
+# =============================
+NAME = "Nave_ESA"
+LARGO = 3.00
+ANCHO = 1.50
+ALTO  = 1.20
+
+FUSE_W_MED = 0.60
+FUSE_H_MED = 0.70
+FUSE_NOSE_LEN = 0.45
+FUSE_TAIL_LEN = 0.55
+FUSE_BODY_LEN = LARGO - FUSE_NOSE_LEN - FUSE_TAIL_LEN
+
+WING_SPAN = ANCHO
+WING_THICK = 0.06
+WING_ROOT_CHORD = 0.90
+WING_TIP_CHORD  = 0.35
+WING_POS_X = 0.95
+WING_POS_Z = 0.30
+
+HT_SPAN = 0.80
+HT_THICK = 0.05
+HT_ROOT_CHORD = 0.45
+HT_TIP_CHORD = 0.25
+HT_POS_X = LARGO - FUSE_TAIL_LEN - 0.20
+HT_POS_Z = 0.70
+
+VT_HEIGHT = 0.50
+VT_THICK  = 0.05
+VT_ROOT_CHORD = 0.55
+VT_TIP_CHORD  = 0.25
+VT_POS_X = LARGO - FUSE_TAIL_LEN - 0.15
+VT_POS_Y = 0.0
+VT_POS_Z = 0.40
+
+NOZZLE_LEN = 0.28
+NOZZLE_D_OUT = 0.32
+NOZZLE_D_IN  = 0.18
+
+GEAR_LEG_LEN = 0.30
+GEAR_LEG_D   = 0.05
+GEAR_POS_X   = LARGO * 0.52
+GEAR_POS_Y   = 0.0
+GEAR_POS_Z   = 0.05
+
+DENSITY = 180.0
+# =============================
+
+def clear_doc(name):
+    if App.ActiveDocument and App.ActiveDocument.Name == name:
+        App.closeDocument(name)
+    for d in App.listDocuments().keys():
+        if d == name:
+            App.closeDocument(d)
+
+def new_doc(name):
+    return App.newDocument(name)
+
+def ellipse_face(a, b, num_points=50):
+    """Genera una cara elíptica aproximada con num_points vértices"""
+    points = []
+    for i in range(num_points):
+        theta = 2*math.pi*i/num_points
+        x = a * math.cos(theta)
+        z = b * math.sin(theta)
+        points.append(App.Vector(x, 0, z))
+    points.append(points[0])  # cerrar la elipse
+    wire = Part.makePolygon(points)
+    return Part.Face(wire)
+
+def translate(shape, x=0, y=0, z=0):
+    shape.translate(App.Vector(x,y,z))
+    return shape
+
+def rotate(shape, axis, angle_deg, center=App.Vector(0,0,0)):
+    shape.rotate(center, axis, angle_deg)
+    return shape
+
+def make_fuselage():
+    # Tres secciones: nariz, media, cola
+    nose = ellipse_face(FUSE_W_MED*0.35, FUSE_H_MED*0.45)
+    mid  = ellipse_face(FUSE_W_MED*0.50, FUSE_H_MED*0.55)
+    tail = ellipse_face(FUSE_W_MED*0.30, FUSE_H_MED*0.40)
+
+    x0 = FUSE_NOSE_LEN*0.25
+    x1 = FUSE_NOSE_LEN + FUSE_BODY_LEN*0.5
+    x2 = LARGO - FUSE_TAIL_LEN*0.35
+
+    nose = translate(nose, x=x0, z=ALTO*0.35)
+    mid  = translate(mid,  x=x1, z=ALTO*0.38)
+    tail = translate(tail, x=x2, z=ALTO*0.36)
+
+    loft = Part.makeLoft([nose, mid, tail], True, False, True)
+
+    nose_tip = Part.makeCone(0.001, FUSE_W_MED*0.20, FUSE_NOSE_LEN*0.75)
+    nose_tip = rotate(nose_tip, App.Vector(0,1,0), 90)
+    nose_tip = translate(nose_tip, x=FUSE_NOSE_LEN*0.15, z=ALTO*0.36)
+
+    tail_tip = Part.makeCone(FUSE_W_MED*0.18, 0.001, FUSE_TAIL_LEN*0.65)
+    tail_tip = rotate(tail_tip, App.Vector(0,1,0), 90)
+    tail_tip = translate(tail_tip, x=LARGO - FUSE_TAIL_LEN*0.60, z=ALTO*0.36)
+
+    fuselage = loft.fuse(nose_tip)
+    fuselage = fuselage.fuse(tail_tip)
+    return fuselage
+
+def make_trapezoid_wing(span_half, root_chord, tip_chord, thick):
+    p1 = App.Vector(0, 0, 0)
+    p2 = App.Vector(root_chord, 0, 0)
+    p3 = App.Vector(tip_chord, span_half, 0)
+    p4 = App.Vector(0, span_half, 0)
+    edges = [Part.LineSegment(p1,p2).toShape(),
+             Part.LineSegment(p2,p3).toShape(),
+             Part.LineSegment(p3,p4).toShape(),
+             Part.LineSegment(p4,p1).toShape()]
+    wire = Part.Wire(edges)
+    face = Part.Face(wire)
+    return face.extrude(App.Vector(0,0,thick))
+
+def make_horizontal_tail():
+    ht = make_trapezoid_wing(HT_SPAN/2.0, HT_ROOT_CHORD, HT_TIP_CHORD, HT_THICK)
+    return translate(ht, x=HT_POS_X, y=-HT_SPAN/2.0, z=HT_POS_Z)
+
+def make_vertical_tail():
+    p1 = App.Vector(0,0,0)
+    p2 = App.Vector(VT_ROOT_CHORD,0,0)
+    p3 = App.Vector(VT_TIP_CHORD,0,VT_HEIGHT)
+    p4 = App.Vector(0,0,VT_HEIGHT)
+    edges = [Part.LineSegment(p1,p2).toShape(),
+             Part.LineSegment(p2,p3).toShape(),
+             Part.LineSegment(p3,p4).toShape(),
+             Part.LineSegment(p4,p1).toShape()]
+    wire = Part.Wire(edges)
+    face = Part.Face(wire)
+    fin = face.extrude(App.Vector(0,VT_THICK,0))
+    return translate(fin, x=VT_POS_X, y=-VT_THICK/2.0, z=VT_POS_Z)
+
+def make_main_wings():
+    semispan = WING_SPAN/2.0
+    wingR = make_trapezoid_wing(semispan, WING_ROOT_CHORD, WING_TIP_CHORD, WING_THICK)
+    wingR = translate(wingR, x=WING_POS_X, y=0.0, z=WING_POS_Z)
+    wingL = wingR.mirror(App.Vector(0,0,0), App.Vector(0,1,0))
+    return wingL, wingR
+
+def make_nozzle():
+    outer = Part.makeCone(NOZZLE_D_OUT/2.0, NOZZLE_D_OUT/2.5, NOZZLE_LEN)
+    outer = rotate(outer, App.Vector(0,1,0), 90)
+    outer = translate(outer, x=LARGO - NOZZLE_LEN*0.95, z=ALTO*0.36)
+
+    inner = Part.makeCone(NOZZLE_D_IN/2.0, NOZZLE_D_IN/2.5, NOZZLE_LEN*0.95)
+    inner = rotate(inner, App.Vector(0,1,0), 90)
+    inner = translate(inner, x=LARGO - NOZZLE_LEN*0.95, z=ALTO*0.36)
+    return outer.cut(inner)
+
+def make_landing_gear():
+    leg = Part.makeCylinder(GEAR_LEG_D/2.0, GEAR_LEG_LEN)
+    leg = translate(leg, x=GEAR_POS_X, y=GEAR_POS_Y - GEAR_LEG_D/2.0, z=GEAR_POS_Z)
+    foot = Part.makeSphere(GEAR_LEG_D*0.45)
+    foot = translate(foot, x=GEAR_POS_X, y=GEAR_POS_Y, z=GEAR_POS_Z - GEAR_LEG_D*0.45)
+    return leg.fuse(foot)
+
+def compute_wing_area_and_mac(span, c_root, c_tip):
+    S = span*(c_root + c_tip)/2.0
+    lam = c_tip/c_root
+    MAC = (2/3)*c_root*((1+lam+lam**2)/(1+lam))
+    x_LE_MAC = ((c_root-c_tip)/3.0)*(1+2*lam)
+    return S, MAC, x_LE_MAC
+
+def add_properties(obj, props):
+    for k,v in props.items():
+        obj.addProperty("App::PropertyString", k)
+        setattr(obj, k, str(v))
+
+def main():
+    clear_doc(NAME)
+    doc = new_doc(NAME)
+
+    fuselage = make_fuselage()
+    wingL, wingR = make_main_wings()
+    htail = make_horizontal_tail()
+    vtail = make_vertical_tail()
+    nozzle = make_nozzle()
+    gear = make_landing_gear()
+
+    ship = fuselage.fuse(wingL)
+    ship = ship.fuse(wingR)
+    ship = ship.fuse(htail)
+    ship = ship.fuse(vtail)
+    ship = ship.fuse(nozzle)
+    ship = ship.fuse(gear)
+
+    part_obj = doc.addObject("Part::Feature", "Nave")
+    part_obj.Shape = ship
+
+    doc.recompute()
+
+    vol = ship.Volume
+    bbox = ship.BoundBox
+    mass = vol * DENSITY
+    com = ship.CenterOfMass
+    wing_area_total, MAC, x_le_mac = compute_wing_area_and_mac(WING_SPAN, WING_ROOT_CHORD, WING_TIP_CHORD)
+    x_ref = WING_POS_X + x_le_mac
+
+    print("\n=== FICHA TÉCNICA (estimada) ===")
+    print(f"Dimensiones (m): L={LARGO:.3f}, W={ANCHO:.3f}, H={ALTO:.3f}")
+    print(f"Volumen sólido (m^3): {vol:.4f}")
+    print(f"Densidad efectiva (kg/m^3): {DENSITY:.1f}")
+    print(f"Masa estimada (kg): {mass:.2f}")
+    print(f"Centro de masa (m): x={com.x:.3f}, y={com.y:.3f}, z={com.z:.3f}")
+    print(f"Área alar total (m^2): {wing_area_total:.3f}")
+    print(f"MAC (m): {MAC:.3f}, LE_MAC desde origen X (m): {x_ref:.3f}")
+    print("================================\n")
+
+    props = {
+        "LWH_m": f"{LARGO:.3f} x {ANCHO:.3f} x {ALTO:.3f}",
+        "Volume_m3": f"{vol:.4f}",
+        "Density_kg_m3": f"{DENSITY:.1f}",
+        "Mass_kg": f"{mass:.2f}",
+        "CG_m": f"{com.x:.3f}, {com.y:.3f}, {com.z:.3f}",
+        "WingArea_m2": f"{wing_area_total:.3f}",
+        "MAC_m": f"{MAC:.3f}",
+        "LE_MAC_X_m": f"{x_ref:.3f}",
+    }
+    add_properties(part_obj, props)
+
+    if Gui.Up:
+        v = Gui.ActiveDocument.ActiveView
+        part_obj.ViewObject.ShapeColor = (0.7,0.75,0.8)
+        part_obj.ViewObject.Transparency = 0
+        v.viewIsometric()
+        v.setAxisCross(True)
+        Gui.SendMsgToActiveView("ViewFit")
+
+    doc.recompute()
+    print("Modelo generado. Ajusta parámetros arriba y re-ejecuta para iterar.")
+
+if __name__=="__main__":
+    main()
